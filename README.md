@@ -39,15 +39,15 @@ python latent_RNA.py fit-transform -i covgfiles.txt -r gene_bins.bed.gz -o pheno
 
 ```shell
 python latent_RNA.py prepare -i covgfiles.txt -r gene_bins.bed.gz -d gene_covg/
-python latent_RNA.py fit -d gene_covg/ -o models.pkl
-python latent_RNA.py transform -d gene_covg/ -m models.pkl -o phenos.tsv.gz
+python latent_RNA.py fit -d gene_covg/ -r gene_bins.bed.gz -o models.pkl
+python latent_RNA.py transform -d gene_covg/ -r gene_bins.bed.gz -m models.pkl -o phenos.tsv.gz
 ```
 
 #### Large dataset, one-time transformation
 
 ```shell
 python latent_RNA.py prepare -i covgfiles.txt -r gene_bins.bed.gz -d gene_covg/
-python latent_RNA.py fit-transform -d gene_covg/ -o phenos.tsv.gz
+python latent_RNA.py fit-transform -d gene_covg/ -r gene_bins.bed.gz -o phenos.tsv.gz
 ```
 
 #### Multiple datasets
@@ -57,8 +57,9 @@ To process multiple datasets, e.g. GTEx tissues, in a way that results in phenot
 ```shell
 python latent_RNA.py prepare -i covgfiles.tissue1.txt -r gene_bins.bed.gz -d gene_covg_tissue1/
 python latent_RNA.py prepare -i covgfiles.tissue2.txt -r gene_bins.bed.gz -d gene_covg_tissue2/
+# Gene coverage directories can either be listed with -d, or if there are many, listed in a file:
 echo 'gene_covg_tissue1/\ngene_covg_tissue2/' > gene_covg_dirs.txt
-python latent_RNA.py fit --dirs gene_covg_dirs.txt -o models.pkl
-python latent_RNA.py transform -d gene_covg_tissue1/ -m models.pkl -o phenos_tissue1.tsv.gz
-python latent_RNA.py transform -d gene_covg_tissue2/ -m models.pkl -o phenos_tissue2.tsv.gz
+python latent_RNA.py fit --dir-file gene_covg_dirs.txt -r gene_bins.bed.gz -o models.pkl
+python latent_RNA.py transform -d gene_covg_tissue1/ -r gene_bins.bed.gz -m models.pkl -o phenos_tissue1.tsv.gz
+python latent_RNA.py transform -d gene_covg_tissue2/ -r gene_bins.bed.gz -m models.pkl -o phenos_tissue2.tsv.gz
 ```
