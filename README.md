@@ -20,6 +20,24 @@ python scripts/get_gene_bins.py --gtf Homo_sapiens.GRCh38.106.genes.gtf.gz --chr
 
 This step also filters genes to include only those with `gene_biotype`/`gene_type` of  "protein_coding". `chr_lengths.genome` is a table of chromosome names and lengths, e.g. chrNameLength.txt from the STAR index, to sort chromosomes.
 
+#### Command line options
+
+```
+usage: get_gene_bins.py [-h] -g GTF -c CHROMOSOMES [-n N_BINS] -o OUTPUT
+
+Get gene feature bins from GTF file
+
+options:
+  -h, --help            show this help message and exit
+  -g GTF, --gtf GTF     GTF file
+  -c CHROMOSOMES, --chromosomes CHROMOSOMES
+                        Chromosome lengths file, e.g. chrNameLength.txt from STAR index, to sort chromosomes.
+  -n N_BINS, --n-bins N_BINS
+                        Number of bins to split each feature (exon, intron, etc.) into
+  -o OUTPUT, --output OUTPUT
+                        Output file (BED)
+```
+
 ### RNA-seq coverage counts
 
 Run [`bedtools coverage` (`coverageBed`)](https://bedtools.readthedocs.io/en/latest/content/tools/coverage.html) to count the reads overlapping each bin, e.g.:
@@ -102,4 +120,92 @@ python latent_RNA.py fit --dir-file gene_covg_dirs.txt -r gene_bins.bed.gz -o mo
 cat tissues.txt | while read tissue; do
     python latent_RNA.py transform -d gene_covg_${tissue}/ -r gene_bins.bed.gz -m models.pkl -o phenos.${tissue}.tsv.gz
 done
+```
+
+#### Command line options
+
+```
+usage: latent_RNA.py [-h] {prepare,fit,transform,fit-transform} ...
+
+Fit and/or apply PCA model on feature bin coverage data
+
+options:
+  -h, --help            show this help message and exit
+
+subcommands:
+  {prepare,fit,transform,fit-transform}
+                        Choose a subcommand
+    prepare             Prepare per-gene input coverage files
+    fit                 Fit PCA model
+    transform           Apply PCA transformation
+    fit-transform       Fit PCA model and apply transformation without saving models
+```
+
+```
+usage: latent_RNA.py prepare [-h] -i FILE -r FILE -d DIR
+
+options:
+  -h, --help            show this help message and exit
+  -i FILE, --inputs FILE
+                        File containing paths to all input coverage files.
+  -r FILE, --regions FILE
+                        BED file containing regions to use for PCA. Must have start, end and region ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of input coverage files.
+  -d DIR, --output-dir DIR
+                        Directory where per-gene numpy binary files will be written.
+```
+
+```
+usage: latent_RNA.py fit [-h] (-i FILE | -d DIR [DIR ...] | --dir-file FILE) -r FILE [--n-samples-max N] [-v FLOAT] [-n N] -o FILE
+
+options:
+  -h, --help            show this help message and exit
+  -i FILE, --inputs FILE
+                        File containing paths to all input coverage files.
+  -d DIR [DIR ...], --gene-covg-dir DIR [DIR ...]
+                        Directory of per-gene numpy binary files. Specify multiple directories to load them all and treat as a single dataset.
+  --dir-file FILE       File containing list of directories of per-gene numpy binary files. Use this instead of -d/--gene-covg-dir in case of many directories.
+  -r FILE, --regions FILE
+                        BED file containing regions to use for PCA. Must have start, end and region ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of input coverage files.
+  --n-samples-max N     Max number of samples to use for fitting PCA models for efficiency. Used only for preprocessed per-gene inputs. Loaded samples are randomly subsetted if higher than this, done after
+                        loading and concatenating data from multiple datasets if applicable, and the sample subsets are chosen independently per gene. Pass 0 for no cutoff. Default 1024.
+  -v FLOAT, --var-expl-max FLOAT
+                        Max variance explained by the PCs kept per gene. Pass 0 or 1 for no variance explained cutoff. Default 0.8.
+  -n N, --n-pcs-max N   Max number of PCs to keep per gene. Pass 0 for no cutoff. Default 32.
+  -o FILE, --output FILE
+                        Output file (*.pickle) to save PCA models
+```
+
+```
+usage: latent_RNA.py transform [-h] (-i FILE | -d DIR) -r FILE -m FILE -o FILE
+
+options:
+  -h, --help            show this help message and exit
+  -i FILE, --inputs FILE
+                        File containing paths to all input coverage files. Base file name before first "." is sample ID.
+  -d DIR, --gene-covg-dir DIR
+                        Directory of per-gene numpy binary files.
+  -r FILE, --regions FILE
+                        BED file containing regions to use for PCA. Must have start, end and region ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of input coverage files.
+  -m FILE, --models FILE
+                        PCA models file (*.pickle) to load and use for transformation
+  -o FILE, --output FILE
+                        Output file (TSV)
+```
+
+```
+usage: latent_RNA.py fit-transform [-h] (-i FILE | -d DIR) -r FILE [-v FLOAT] [-n N] -o FILE
+
+options:
+  -h, --help            show this help message and exit
+  -i FILE, --inputs FILE
+                        File containing paths to all input coverage files. Base file name before first "." is sample ID.
+  -d DIR, --gene-covg-dir DIR
+                        Directory of per-gene numpy binary files.
+  -r FILE, --regions FILE
+                        BED file containing regions to use for PCA. Must have start, end and region ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of input coverage files.
+  -v FLOAT, --var-expl-max FLOAT
+                        Max variance explained by the PCs kept per gene. Pass 0 or 1 for no variance explained cutoff. Default 0.8.
+  -n N, --n-pcs-max N   Max number of PCs to keep per gene. Pass 0 for no cutoff. Default 32.
+  -o FILE, --output FILE
+                        Output file (TSV)
 ```

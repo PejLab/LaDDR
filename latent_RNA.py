@@ -111,11 +111,13 @@ def subset_pcs(pca: PCA, n_pcs_max: int):
         pca.singular_values_ = pca.singular_values_[:n_pcs_max]
         pca.noise_variance_ = None # Could compute if necessary, but omitting otherwise
 
-def gene_fit(df: pd.DataFrame, regions: pd.DataFrame, var_expl: float, n_pcs_max: int) -> PCA:
+def gene_fit(df: pd.DataFrame, regions: pd.DataFrame, n_samples_max: int, var_expl: float, n_pcs_max: int) -> PCA:
     """Fit PCA model to normalized coverage for one gene
     
     Saves enough PCs to explain var_expl variance or n_pcs_max, whichever is smaller.
     """
+    if n_samples_max != 0 and n_samples_max < df.shape[1]:
+        df = df.sample(n=n_samples_max, axis=1)
     df = normalize_gene(df, regions)
     df = df.loc[df.std(axis=1) > 0, :]
     if df.shape[0] == 0:
@@ -176,13 +178,13 @@ def gene_fit_transform(df: pd.DataFrame, regions: pd.DataFrame, var_expl: float,
     out.set_index(['gene_id', 'PC'], inplace=True)
     return out
 
-def fit(covg: CoverageData, regions: pd.DataFrame, var_expl_max: float, n_pcs_max: int) -> dict:
+def fit(covg: CoverageData, regions: pd.DataFrame, n_samples_max: int, var_expl_max: float, n_pcs_max: int) -> dict:
     """Fit PCA models for all genes"""
     models = {'var_expl_max': var_expl_max, 'n_pcs_max': n_pcs_max, 'models': {}}
     regions = regions.groupby('gene_id')
     for gene_id, x in tqdm(covg.by_gene(), total=len(covg.genes), desc="Fitting models"):
         reg = regions.get_group(gene_id)
-        model = gene_fit(x, reg, var_expl_max, n_pcs_max)
+        model = gene_fit(x, reg, n_samples_max, var_expl_max, n_pcs_max)
         if model is not None:
             models['models'][gene_id] = model
     return models
@@ -229,6 +231,7 @@ def create_parser():
     parser_fit_input.add_argument('-d', '--gene-covg-dir', nargs='+', type=Path, metavar='DIR', help='Directory of per-gene numpy binary files. Specify multiple directories to load them all and treat as a single dataset.')
     parser_fit_input.add_argument('--dir-file', type=Path, metavar='FILE', help='File containing list of directories of per-gene numpy binary files. Use this instead of -d/--gene-covg-dir in case of many directories.')
     parser_fit.add_argument('-r', '--regions', type=Path, metavar='FILE', required=True, help='BED file containing regions to use for PCA. Must have start, end and region ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of input coverage files.')
+    parser_fit.add_argument('--n-samples-max', type=int, default=1024, metavar='N', help='Max number of samples to use for fitting PCA models for efficiency. Used only for preprocessed per-gene inputs. Loaded samples are randomly subsetted if higher than this, done after loading and concatenating data from multiple datasets if applicable, and the sample subsets are chosen independently per gene. Pass 0 for no cutoff. Default 1024.')
     parser_fit.add_argument('-v', '--var-expl-max', type=float, default=0.8, metavar='FLOAT', help='Max variance explained by the PCs kept per gene. Pass 0 or 1 for no variance explained cutoff. Default 0.8.')
     parser_fit.add_argument('-n', '--n-pcs-max', type=int, default=32, metavar='N', help='Max number of PCs to keep per gene. Pass 0 for no cutoff. Default 32.')
     parser_fit.add_argument('-o', '--output', type=Path, metavar='FILE', required=True, help='Output file (*.pickle) to save PCA models')
@@ -243,7 +246,7 @@ def create_parser():
     parser_transform.add_argument('-o', '--output', type=Path, metavar='FILE', required=True, help='Output file (TSV)')
 
     # Subparser for 'fit-transform'
-    parser_fit_transform = subparsers.add_parser('fit-transform', help='Fit PCA model and apply transformation')
+    parser_fit_transform = subparsers.add_parser('fit-transform', help='Fit PCA model and apply transformation without saving models')
     parser_fit_transform_input = parser_fit_transform.add_mutually_exclusive_group(required=True)
     parser_fit_transform_input.add_argument('-i', '--inputs', type=Path, metavar='FILE', help='File containing paths to all input coverage files. Base file name before first "." is sample ID.')
     parser_fit_transform_input.add_argument('-d', '--gene-covg-dir', nargs=1, type=Path, metavar='DIR', help='Directory of per-gene numpy binary files.')
@@ -275,7 +278,7 @@ if __name__ == '__main__':
             covg.from_gene_files(gene_covg_dirs, regions)
     if args.subcommand == 'fit':
         print('Fitting PCA models...', flush=True)
-        models = fit(covg, regions, args.var_expl_max, args.n_pcs_max)
+        models = fit(covg, regions, args.n_samples_max, args.var_expl_max, args.n_pcs_max)
         with open(args.output, 'wb') as f:
             pickle.dump(models, f)
         print(f'PCA models saved to {args.output}', flush=True)
