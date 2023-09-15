@@ -1,0 +1,150 @@
+from pathlib import Path
+
+def dataset_samples(dataset):
+    with open(input_dir / f'samples.{dataset}.txt') as f:
+        return [l.strip() for l in f]
+
+ref_genome = 'path/to/ref/genome'
+input_dir = Path('data_input')
+ref_anno = input_dir / 'Homo_sapiens.GRCh38.106.chr1_0-2Mb.gtf'
+bam_dir = input_dir / 'bam'
+working_dir = Path('data_snakemake')
+
+N_BATCHES = 3 # Based on number of genes and batch size
+
+with open(input_dir / 'datasets.txt', 'r') as f:
+    datasets = [l.strip() for l in f]
+
+localrules:
+    get_chrom_lengths,
+    latent_pheno_groups,
+
+rule all:
+    input:
+        # working_dir / 'covg_batch_dset1' / 'covg_0.npy',
+        # working_dir / 'models' / 'models_0.pickle',
+        expand(working_dir / 'phenos.{dset}.tsv.gz', dset=datasets),
+
+rule get_chrom_lengths:
+    """Get chromosome lengths from genome FASTA index for bedtools"""
+    input:
+        lambda w: f'{ref_genome}.fai',
+    output:
+        input_dir / 'chr_lengths.genome',
+    shell:
+        'cut -f1,2 {input} > {output}'
+
+rule collapse_annotation:
+    """Merge the exons for all isoforms of a gene into one set of non-overlapping exon regions."""
+    input:
+        ref_anno,
+    output:
+        working_dir / 'collapsed.gtf',
+    shell:
+        'python ../scripts/collapse_annotation.py {input} {output} --collapse_only'
+
+rule get_gene_bins:
+    """Divide gene features into bins"""
+    input:
+        gtf = working_dir / 'collapsed.gtf',
+        chrom = input_dir / 'chr_lengths.genome',
+    output:
+        working_dir / 'gene_bins.bed.gz',
+    params:
+        n_bins = 10,
+    shell:
+        """
+        python ../scripts/get_gene_bins.py \
+            --gtf {input.gtf} \
+            --chromosomes {input.chrom} \
+            --n-bins {params.n_bins} \
+            --output {output}
+        """
+
+rule bedtools_coverage:
+    """Get RNA-Seq read coverage for feature bins"""
+    input:
+        bam = bam_dir / '{sample_id}.bam',
+        bed = working_dir / 'gene_bins.bed.gz',
+        chrom = input_dir / 'chr_lengths.genome',
+    output:
+        working_dir / 'covg_sample_{dset}' / '{sample_id}.txt',
+    params:
+        covg_sample_dir = input_dir / 'covg_sample',
+    shell:
+        # -split is necessary I think to avoid counting coverage between spliced exons
+        """
+        mkdir -p {params.covg_sample_dir}
+        bedtools coverage -split -sorted -counts \
+            -a {input.bed} \
+            -b {input.bam} \
+            -g {input.chrom} \
+            | cut -f7 > {output}
+        """
+
+rule prepare_coverage:
+    """Run PCA on feature bin coverage and create BED file"""
+    input:
+        # covg_sample = covg_sample_files,
+        covg_sample = lambda w: expand(str(working_dir / f'covg_sample_{w.dset}' / '{sample_id}.txt'), sample_id=dataset_samples(w.dset)),
+        bins = working_dir / 'gene_bins.bed.gz',
+    output:
+        covg = working_dir / 'covg_batch_{dset}' / 'covg_{batch}.npy',
+        regions = working_dir / 'covg_batch_{dset}' / 'covg_{batch}.regions.tsv.gz',
+    params:
+        covg_batch_dir = str(working_dir / 'covg_batch_{dset}'),
+        covg_file_list = str(working_dir / 'covg_sample_files_{dset}.txt'),
+        batch_size = 20,
+    shell:
+        """
+        mkdir -p {params.covg_batch_dir}
+        printf '%s\\n' {input.covg_sample} > {params.covg_file_list}
+        python ../latent_RNA.py prepare \
+            --inputs {params.covg_file_list} \
+            --regions {input.bins} \
+            --output-dir {params.covg_batch_dir} \
+            --batch-size {params.batch_size}
+        """
+
+rule fit_models:
+    """Fit models to latent features"""
+    input:
+        covg_batch = expand(str(working_dir / 'covg_batch_{dset}' / 'covg_{{batch}}.npy'), dset=datasets),
+        regions = expand(str(working_dir / 'covg_batch_{dset}' / 'covg_{{batch}}.regions.tsv.gz'), dset=datasets),
+    output:
+        models = working_dir / 'models' / 'models_{batch}.pickle',
+    params:
+        covg_batch_dirs = expand(str(working_dir / 'covg_batch_{dset}'), dset=datasets),
+        covg_batch_dirs_file = working_dir / 'covg_batch_dirs.txt',
+        models_dir = working_dir / 'models',
+        var_expl_max = 0.80,
+        n_pcs_max = 32,
+    shell:
+        """
+        mkdir -p {params.models_dir}
+        printf '%s\\n' {params.covg_batch_dirs} > {params.covg_batch_dirs_file}
+        python ../latent_RNA.py fit \
+            --dir-file {params.covg_batch_dirs_file} \
+            --batch {wildcards.batch} \
+            --models-dir {params.models_dir} \
+            -v {params.var_expl_max} \
+            -n {params.n_pcs_max}
+        """
+
+rule get_latent_phenotypes:
+    """Apply PCA models to generate latent phenotypes"""
+    input:
+        covg_batch = expand(str(working_dir / 'covg_batch_{{dset}}' / 'covg_{batch}.npy'), batch=range(N_BATCHES)),
+        models = expand(str(working_dir / 'models' / 'models_{batch}.pickle'), batch=range(N_BATCHES)),
+    output:
+        phenos = working_dir / 'phenos.{dset}.tsv.gz',
+    params:
+        covg_batch_dir = str(working_dir / 'covg_batch_{dset}'),
+        models_dir = working_dir / 'models',
+    shell:
+        """
+        python ../latent_RNA.py transform \
+            --batch-covg-dir {params.covg_batch_dir} \
+            --models-dir {params.models_dir} \
+            --output {output}
+        """
