@@ -18,7 +18,7 @@ Then, split exons, introns, upstream, and downstream regions into bins:
 python scripts/get_gene_bins.py --gtf Homo_sapiens.GRCh38.106.genes.gtf.gz --chromosomes chr_lengths.genome --output gene_bins.bed.gz
 ```
 
-This step also filters genes to include only those with `gene_biotype`/`gene_type` of  "protein_coding". `chr_lengths.genome` is a table of chromosome names and lengths, e.g. chrNameLength.txt from the STAR index, to sort chromosomes.
+This step also filters genes to include only those with `gene_biotype`/`gene_type` of  "protein_coding", and excludes bins that overlap the exon of another gene. `chr_lengths.genome` is a table of chromosome names and lengths, e.g. chrNameLength.txt from the STAR index, to sort chromosomes.
 
 #### Command line options
 
