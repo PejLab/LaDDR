@@ -56,7 +56,7 @@ awk '{print "covg/"$1".txt"}' samples.txt > covgfiles.txt
 
 There are three stages to generate latent phenotypes from coverage counts:
 
-1. `prepare`: Per-sample coverage files are first assembled into a bin by sample matrix, split into batches of N genes each, and saved.
+1. `prepare`: Per-sample coverage files are first assembled into a bin by sample matrix, normalized, split into batches of N genes each, and saved.
 2. `fit`: Coverage count matrices are loaded, one batch at a time, and used to fit a PCA model for each gene. If a project involves multiple datasets, e.g. tissues, the coverage count matrices for each dataset can be loaded and concatenated, and the models fit on the concatenated data.
 3. `transform`: Coverage count matrices are loaded, one batch at a time, and used to transform the data using the fitted PCA models. The transformed data is saved as a table of samples by phenotypes, i.e. multiple PCs per gene. If a project involves multiple datasets, the coverage count matrices for each dataset can be loaded and transformed separately using the same set of models, so that the phenotypes correspond across datasets.
 
@@ -83,17 +83,19 @@ subcommands:
 ```
 
 ```
-usage: latent_RNA.py prepare [-h] -i FILE -r FILE -d DIR [--batch-size N]
+usage: latent_RNA.py prepare [-h] -i FILE -r FILE [-p FILE [FILE ...] | --pheno-paths-file FILE] -d DIR [--batch-size N]
 
 options:
   -h, --help            show this help message and exit
   -i FILE, --inputs FILE
-                        File containing paths to all per-sample coverage files. Each one has one
-                        integer per line corresponding to rows of `regions`.
+                        File containing paths to all per-sample coverage files. Each one has one integer per line corresponding to rows of `regions`.
   -r FILE, --regions FILE
-                        BED file containing regions to use for PCA. Must have start, end and region
-                        ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of input
-                        coverage files.
+                        BED file containing regions to use for PCA. Must have start, end and region ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of input coverage files.
+  -p FILE [FILE ...], --pheno-paths FILE [FILE ...]
+                        One or more paths to phenotype tables to regress out of the coverage data per gene before PCA. Files should be in bed format, i.e. input format for tensorqtl. Gene IDs are parsed from the
+                        4th column from the start up to the first non-alphanumeric character.
+  --pheno-paths-file FILE
+                        File containing list of paths to phenotype tables.
   -d DIR, --output-dir DIR
                         Directory where per-batch numpy binary files will be written.
   --batch-size N        Number of genes (at most) per batch. Default 200.

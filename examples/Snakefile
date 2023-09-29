@@ -10,6 +10,7 @@ ref_anno = input_dir / 'Homo_sapiens.GRCh38.106.chr1_0-2Mb.gtf'
 bam_dir = input_dir / 'bam'
 working_dir = Path('data_snakemake')
 
+modalities = ['alt_TSS', 'alt_polyA', 'expression', 'isoforms', 'splicing', 'stability']
 N_BATCHES = 3 # Based on number of genes and batch size
 
 with open(input_dir / 'datasets.txt', 'r') as f:
@@ -17,13 +18,13 @@ with open(input_dir / 'datasets.txt', 'r') as f:
 
 localrules:
     get_chrom_lengths,
-    latent_pheno_groups,
+    # latent_pheno_groups,
 
 rule all:
     input:
         # working_dir / 'covg_batch_dset1' / 'covg_0.npy',
         # working_dir / 'models' / 'models_0.pickle',
-        expand(working_dir / 'phenos.{dset}.tsv.gz', dset=datasets),
+        expand(working_dir / 'latent_phenos.{dset}.tsv.gz', dset=datasets),
 
 rule get_chrom_lengths:
     """Get chromosome lengths from genome FASTA index for bedtools"""
@@ -83,11 +84,13 @@ rule bedtools_coverage:
         """
 
 rule prepare_coverage:
-    """Run PCA on feature bin coverage and create BED file"""
+    """Assemble per-sample coverage count files, normalize, regress out explicit phenotypes, and bin into batches for PCA"""
     input:
         # covg_sample = covg_sample_files,
         covg_sample = lambda w: expand(str(working_dir / f'covg_sample_{w.dset}' / '{sample_id}.txt'), sample_id=dataset_samples(w.dset)),
         bins = working_dir / 'gene_bins.bed.gz',
+        phenos = expand('data_input/phenotypes/{modality}.bed.gz', modality=modalities),
+        phenos_list = 'data_input/pheno_files.txt',
     output:
         covg = working_dir / 'covg_batch_{dset}' / 'covg_{batch}.npy',
         regions = working_dir / 'covg_batch_{dset}' / 'covg_{batch}.regions.tsv.gz',
@@ -102,6 +105,7 @@ rule prepare_coverage:
         python ../latent_RNA.py prepare \
             --inputs {params.covg_file_list} \
             --regions {input.bins} \
+            --pheno-paths-file {input.phenos_list} \
             --output-dir {params.covg_batch_dir} \
             --batch-size {params.batch_size}
         """
@@ -137,7 +141,7 @@ rule get_latent_phenotypes:
         covg_batch = expand(str(working_dir / 'covg_batch_{{dset}}' / 'covg_{batch}.npy'), batch=range(N_BATCHES)),
         models = expand(str(working_dir / 'models' / 'models_{batch}.pickle'), batch=range(N_BATCHES)),
     output:
-        phenos = working_dir / 'phenos.{dset}.tsv.gz',
+        phenos = working_dir / 'latent_phenos.{dset}.tsv.gz',
     params:
         covg_batch_dir = str(working_dir / 'covg_batch_{dset}'),
         models_dir = working_dir / 'models',

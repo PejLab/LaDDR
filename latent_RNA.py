@@ -7,6 +7,7 @@ import pickle
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
+from sklearn.linear_model import LinearRegression
 from tqdm import tqdm
 
 class CoverageData:
@@ -76,21 +77,57 @@ def norm_counts_over_gene(counts: pd.DataFrame) -> pd.DataFrame:
 def normalize_coverage(df: pd.DataFrame, regions: pd.DataFrame) -> pd.DataFrame:
     """Normalize coverage"""
     # Normalize coverage to ignore total expression, i.e. total coverage per sample per gene sums to 1:
-    df = df.groupby('gene_id', group_keys=False).apply(norm_counts_over_gene)
+    tqdm.pandas(desc='Normalizing coverage per gene')
+    df = df.groupby('gene_id', group_keys=False).progress_apply(norm_counts_over_gene)
     # Normalize counts to mean coverage per bp within each region:
     df = df.div(regions['length'].loc[df.index], axis=0)
     # Variance stabilization:
     df = np.sqrt(df)
     return df
 
-def prepare(infile: Path, regionfile: Path, batch_size: int, outdir: Path):
+def load_phenotypes(pheno_file: Path, samples: list) -> pd.DataFrame:
+    """Load phenotype table in BED format
+    
+    Gene IDs are parsed from the 4th column from the start up to the first
+    non-alphanumeric character. Chromosome, start, and end columns are ignored.
+    """
+    df = pd.read_csv(pheno_file, sep='\t', index_col=3, dtype={0: str, 1: str, 2: str})
+    df = df.drop(df.columns[:3], axis=1)
+    df.index.name = 'phenotype_id'
+    # Check that all samples are present:
+    missing = set(samples) - set(df.columns)
+    assert len(missing) == 0, f'Phenotype table is missing samples: {missing}'
+    df = df[samples]
+    return df
+
+def regress_out_phenos(counts: pd.DataFrame, phenos: pd.core.groupby.DataFrameGroupBy, gene_id: str) -> pd.DataFrame:
+    if gene_id in phenos.groups:
+        x = phenos.get_group(gene_id).to_numpy().T
+        y = counts.to_numpy().T
+        model = LinearRegression().fit(x, y)
+        y = y - model.predict(x)
+        counts = pd.DataFrame(y.T, index=counts.index, columns=counts.columns)
+    return counts
+
+def prepare(infile: Path, regionfile: Path, pheno_files: list, batch_size: int, outdir: Path):
     """Assemble per-sample coverage, split into batches, and save to numpy binary files"""
     regions = load_regions(regionfile)
     counts = load_sample_covg(infile, regions)
-    print('Normalizing coverage...', flush=True)
     counts = normalize_coverage(counts, regions)
     samples = counts.columns
     genes = regions.index.get_level_values('gene_id').unique().sort_values()
+
+    if len(pheno_files) > 0:
+        # Regress out phenotypes:
+        phenos = [load_phenotypes(f, samples).reset_index() for f in pheno_files]
+        phenos = pd.concat(phenos, axis=0)
+        # Parse gene IDs from phenotype IDs:
+        pheno_genes = phenos['phenotype_id'].str.extract(r'([a-zA-Z0-9]+)')[0]
+        phenos = phenos.drop('phenotype_id', axis=1)
+        phenos = phenos.groupby(pheno_genes)
+        tqdm.pandas(desc='Regressing out phenotypes per gene')
+        counts = counts.groupby('gene_id', group_keys=False).progress_apply(lambda c: regress_out_phenos(c, phenos, c.name))
+        assert counts.index.equals(regions.index)
 
     n_batches = math.ceil(len(genes) / batch_size)
     gene_batch = {}
@@ -227,6 +264,9 @@ def create_parser():
     parser_prepare = subparsers.add_parser('prepare', help='Prepare batched input coverage files. Coverage counts will be assembled and saved in batches, `fit` will be run on each batch separately, and `transform` will run all batches and produce the combined output.')
     parser_prepare.add_argument('-i', '--inputs', type=Path, metavar='FILE', required=True, help='File containing paths to all per-sample coverage files. Each one has one integer per line corresponding to rows of `regions`.')
     parser_prepare.add_argument('-r', '--regions', type=Path, metavar='FILE', required=True, help='BED file containing regions to use for PCA. Must have start, end and region ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of input coverage files.')
+    parser_prepare_phenos = parser_prepare.add_mutually_exclusive_group(required=False)
+    parser_prepare_phenos.add_argument('-p', '--pheno-paths', nargs='+', type=Path, metavar='FILE', help='One or more paths to phenotype tables to regress out of the coverage data per gene before PCA. Files should be in bed format, i.e. input format for tensorqtl. Gene IDs are parsed from the 4th column from the start up to the first non-alphanumeric character.')
+    parser_prepare_phenos.add_argument('--pheno-paths-file', type=Path, metavar='FILE', help='File containing list of paths to phenotype tables.')
     parser_prepare.add_argument('-d', '--output-dir', type=Path, metavar='DIR', required=True, help='Directory where per-batch numpy binary files will be written.')
     parser_prepare.add_argument('--batch-size', type=int, default=200, metavar='N', help='Number of genes (at most) per batch. Default 200.')
 
@@ -253,8 +293,15 @@ if __name__ == '__main__':
     parser = create_parser()
     args = parser.parse_args()
     if args.subcommand == 'prepare':
+        if args.pheno_paths is not None:
+            pheno_paths = args.pheno_paths
+        elif args.pheno_paths_file is not None:
+            with open(args.pheno_paths_file) as f:
+                pheno_paths = [Path(l.strip()) for l in f]
+        else:
+            pheno_paths = []
         print('=== Preparing batched coverage files ===', flush=True)
-        prepare(args.inputs, args.regions, args.batch_size, args.output_dir)
+        prepare(args.inputs, args.regions, pheno_paths, args.batch_size, args.output_dir)
         print(f'Coverage files saved in {args.output_dir}', flush=True)
     elif args.subcommand == 'fit':
         if args.batch_covg_dir is not None:
