@@ -61,10 +61,34 @@ def load_sample_covg(infile: Path, regions: pd.DataFrame) -> pd.DataFrame:
     counts = pd.DataFrame(counts, index=regions.index, columns=infiles['sample'])
     return counts
 
+def norm_counts_over_gene(counts: pd.DataFrame) -> pd.DataFrame:
+    """For one gene, scale coverage per sample to sum to 1 per sample
+    
+    Scale each total to 1, except for samples with 0 total, which are set to 0.
+    This is to prevent NaNs which would cause the entire gene to be dropped if
+    it had 0 expression in a single sample.
+    """
+    counts = counts.div(counts.sum(axis=0), axis=1)
+    counts = counts.fillna(0)
+    assert not counts.isna().any().any()
+    return counts
+
+def normalize_coverage(df: pd.DataFrame, regions: pd.DataFrame) -> pd.DataFrame:
+    """Normalize coverage"""
+    # Normalize coverage to ignore total expression, i.e. total coverage per sample per gene sums to 1:
+    df = df.groupby('gene_id', group_keys=False).apply(norm_counts_over_gene)
+    # Normalize counts to mean coverage per bp within each region:
+    df = df.div(regions['length'].loc[df.index], axis=0)
+    # Variance stabilization:
+    df = np.sqrt(df)
+    return df
+
 def prepare(infile: Path, regionfile: Path, batch_size: int, outdir: Path):
     """Assemble per-sample coverage, split into batches, and save to numpy binary files"""
     regions = load_regions(regionfile)
     counts = load_sample_covg(infile, regions)
+    print('Normalizing coverage...', flush=True)
+    counts = normalize_coverage(counts, regions)
     samples = counts.columns
     genes = regions.index.get_level_values('gene_id').unique().sort_values()
 
@@ -94,30 +118,6 @@ def prepare(infile: Path, regionfile: Path, batch_size: int, outdir: Path):
         reg = regions.loc[x.index, :]
         reg.to_csv(outdir / f'covg_{batch_id}.regions.tsv.gz', sep='\t')
 
-def norm_counts_over_gene(counts: pd.DataFrame) -> pd.DataFrame:
-    """For one gene, scale coverage per sample to have the same total per sample
-    
-    Scale each total to the median of the totals per sample, except for samples
-    with 0 total, which are set to 0. This is to prevent NaNs which would cause
-    the entire gene to be dropped if it had 0 expression in a single sample.
-    """
-    sample_totals = counts.sum(axis=0)
-    scale_factors = sample_totals.median() / sample_totals
-    scale_factors = scale_factors.fillna(0).replace(np.inf, 0)
-    counts = counts.mul(scale_factors, axis=1)
-    assert not counts.isna().any().any()
-    return counts
-
-def normalize_gene(df: pd.DataFrame, regions: pd.DataFrame) -> pd.DataFrame:
-    """Normalize coverage for one gene"""
-    # Normalize coverage to ignore total expression, i.e. each sample has same total coverage for the gene
-    df = norm_counts_over_gene(df)
-    # Normalize counts to mean coverage per bp within each region
-    df = df.div(regions['length'].loc[df.index], axis=0)
-    # Variance stabilization:
-    df = np.sqrt(df)
-    return df
-
 def subset_pcs(pca: PCA, n_pcs_max: int):
     """Subset the PCA model to n_pcs_max PCs to reduce file size"""
     if n_pcs_max != 0 and n_pcs_max < pca.n_components_:
@@ -128,14 +128,13 @@ def subset_pcs(pca: PCA, n_pcs_max: int):
         pca.singular_values_ = pca.singular_values_[:n_pcs_max]
         pca.noise_variance_ = None # Could compute if necessary, but omitting otherwise
 
-def fit_gene(df: pd.DataFrame, regions: pd.DataFrame, n_samples_max: int, var_expl: float, n_pcs_max: int) -> PCA:
+def fit_gene(df: pd.DataFrame, n_samples_max: int, var_expl: float, n_pcs_max: int) -> PCA:
     """Fit PCA model to normalized coverage for one gene
     
     Saves enough PCs to explain var_expl variance or n_pcs_max, whichever is smaller.
     """
     if n_samples_max != 0 and n_samples_max < df.shape[1]:
         df = df.sample(n=n_samples_max, axis=1)
-    df = normalize_gene(df, regions)
     df = df.loc[df.std(axis=1) > 0, :]
     if df.shape[0] == 0:
         return None
@@ -152,9 +151,8 @@ def fit_gene(df: pd.DataFrame, regions: pd.DataFrame, n_samples_max: int, var_ex
     features['std'] = xstd
     return {'pca': pca, 'features': features}
 
-def transform_gene(df: pd.DataFrame, regions: pd.DataFrame, pca: PCA, features: pd.DataFrame) -> pd.DataFrame:
+def transform_gene(df: pd.DataFrame, pca: PCA, features: pd.DataFrame) -> pd.DataFrame:
     """Apply PCA model to normalized coverage for one gene"""
-    df = normalize_gene(df, regions)
     # Filter df to include same features as the model:
     df = df.loc[features.index, :]
     x = df.values.T
@@ -174,10 +172,8 @@ def fit_batch(batch_covg_dirs: list, batch: int, n_samples_max: int, var_expl_ma
     """Fit PCA models for all genes in a batch"""
     covg = CoverageData(batch_covg_dirs, batch)
     models = {'var_expl_max': var_expl_max, 'n_pcs_max': n_pcs_max, 'models': {}}
-    regions = covg.regions.groupby('gene_id')
     for gene_id, x in tqdm(covg.by_gene(), total=len(covg.genes), desc="Fitting models"):
-        reg = regions.get_group(gene_id)
-        model = fit_gene(x, reg, n_samples_max, var_expl_max, n_pcs_max)
+        model = fit_gene(x, n_samples_max, var_expl_max, n_pcs_max)
         if model is not None:
             models['models'][gene_id] = model
     return models
@@ -205,13 +201,11 @@ def transform_batch(batch_covg_dir: Path, batch: int, models_dir: dict) -> pd.Da
     models_file = models_dir / f'models_{batch}.pickle'
     with open(models_file, 'rb') as f:
         models = pickle.load(f)
-    regions = covg.regions.groupby('gene_id')
     for gene_id, x in tqdm(covg.by_gene(), total=len(covg.genes), desc="  Generating phenotypes per gene"):
         if gene_id in models['models']:
             pca = models['models'][gene_id]['pca']
             features = models['models'][gene_id]['features']
-            reg = regions.get_group(gene_id)
-            yield transform_gene(x, reg, pca, features)
+            yield transform_gene(x, pca, features)
 
 def transform(batch_covg_dir: Path, models_dir: dict) -> pd.DataFrame:
     """Apply PCA transformation to all genes"""
