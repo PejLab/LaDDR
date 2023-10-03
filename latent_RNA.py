@@ -75,10 +75,9 @@ def norm_counts_over_gene(counts: pd.DataFrame) -> pd.DataFrame:
     return counts
 
 def normalize_coverage(df: pd.DataFrame, regions: pd.DataFrame) -> pd.DataFrame:
-    """Normalize coverage"""
+    """Normalize coverage for each gene in one batch"""
     # Normalize coverage to ignore total expression, i.e. total coverage per sample per gene sums to 1:
-    tqdm.pandas(desc='Normalizing coverage per gene')
-    df = df.groupby('gene_id', group_keys=False).progress_apply(norm_counts_over_gene)
+    df = df.groupby('gene_id', group_keys=False).apply(norm_counts_over_gene)
     # Normalize counts to mean coverage per bp within each region:
     df = df.div(regions['length'].loc[df.index], axis=0)
     # Variance stabilization:
@@ -100,34 +99,22 @@ def load_phenotypes(pheno_file: Path, samples: list) -> pd.DataFrame:
     df = df[samples]
     return df
 
-def regress_out_phenos(counts: pd.DataFrame, phenos: pd.core.groupby.DataFrameGroupBy, gene_id: str) -> pd.DataFrame:
+def regress_out_phenos(df: pd.DataFrame, phenos: pd.core.groupby.DataFrameGroupBy, gene_id: str) -> pd.DataFrame:
+    """Regress out phenotypes per gene"""
     if gene_id in phenos.groups:
         x = phenos.get_group(gene_id).to_numpy().T
-        y = counts.to_numpy().T
+        y = df.to_numpy().T
         model = LinearRegression().fit(x, y)
         y = y - model.predict(x)
-        counts = pd.DataFrame(y.T, index=counts.index, columns=counts.columns)
-    return counts
+        df = pd.DataFrame(y.T, index=df.index, columns=df.columns)
+    return df
 
 def prepare(infile: Path, regionfile: Path, pheno_files: list, batch_size: int, outdir: Path):
     """Assemble per-sample coverage, split into batches, and save to numpy binary files"""
     regions = load_regions(regionfile)
     counts = load_sample_covg(infile, regions)
-    counts = normalize_coverage(counts, regions)
     samples = counts.columns
     genes = regions.index.get_level_values('gene_id').unique().sort_values()
-
-    if len(pheno_files) > 0:
-        # Regress out phenotypes:
-        phenos = [load_phenotypes(f, samples).reset_index() for f in pheno_files]
-        phenos = pd.concat(phenos, axis=0)
-        # Parse gene IDs from phenotype IDs:
-        pheno_genes = phenos['phenotype_id'].str.extract(r'([a-zA-Z0-9]+)')[0]
-        phenos = phenos.drop('phenotype_id', axis=1)
-        phenos = phenos.groupby(pheno_genes)
-        tqdm.pandas(desc='Regressing out phenotypes per gene')
-        counts = counts.groupby('gene_id', group_keys=False).progress_apply(lambda c: regress_out_phenos(c, phenos, c.name))
-        assert counts.index.equals(regions.index)
 
     n_batches = math.ceil(len(genes) / batch_size)
     gene_batch = {}
@@ -144,14 +131,23 @@ def prepare(infile: Path, regionfile: Path, pheno_files: list, batch_size: int, 
         f.write('\n'.join([str(i) for i in range(n_batches)]) + '\n')
     batches = counts.groupby(regions['batch'])
     regions = regions.drop('batch', axis=1)
-    for batch_id, x in tqdm(batches, total=n_batches, desc="Saving per-batch coverage files"):
-        counts = x.to_numpy()
-        # i_start = batch_id * batch_size
-        # i_end = min((batch_id + 1) * batch_size, len(genes)) - 1
-        # index_length = len(str(len(genes) - 1))
-        # i_start = f'{i_start:0{index_length}}'
-        # i_end = f'{i_end:0{index_length}}'
-        np.save(outdir / f'covg_{batch_id}.npy', counts)
+    if len(pheno_files) > 0:
+        # Load phenotypes to regress out:
+        phenos = [load_phenotypes(f, samples).reset_index() for f in pheno_files]
+        phenos = pd.concat(phenos, axis=0)
+        # Parse gene IDs from phenotype IDs:
+        pheno_genes = phenos['phenotype_id'].str.extract(r'([a-zA-Z0-9]+)')[0]
+        phenos = phenos.drop('phenotype_id', axis=1)
+        phenos = phenos.groupby(pheno_genes)
+    for batch_id, x in tqdm(batches, total=n_batches, desc="Processing and saving per-batch coverage files"):
+        x = normalize_coverage(x, regions)
+        if len(pheno_files) > 0:
+            # Regress out phenotypes:
+            prev_index = x.index.copy()
+            x = x.groupby('gene_id', group_keys=False).apply(lambda c: regress_out_phenos(c, phenos, c.name))
+            assert x.index.equals(prev_index)
+        mat = x.to_numpy()
+        np.save(outdir / f'covg_{batch_id}.npy', mat)
         reg = regions.loc[x.index, :]
         reg.to_csv(outdir / f'covg_{batch_id}.regions.tsv.gz', sep='\t')
 
