@@ -92,8 +92,8 @@ rule prepare_coverage:
         phenos = expand('data_input/phenotypes/{modality}.bed.gz', modality=modalities),
         phenos_list = 'data_input/pheno_files.txt',
     output:
-        covg = working_dir / 'covg_batch_{dset}' / 'covg_{batch}.npy',
-        regions = working_dir / 'covg_batch_{dset}' / 'covg_{batch}.regions.tsv.gz',
+        covg = expand(str(working_dir / 'covg_batch_{{dset}}' / 'covg_{batch}.npy'), batch=range(N_BATCHES)),
+        regions = expand(str(working_dir / 'covg_batch_{{dset}}' / 'covg_{batch}.regions.tsv.gz'), batch=range(N_BATCHES)),
     params:
         covg_batch_dir = str(working_dir / 'covg_batch_{dset}'),
         covg_file_list = str(working_dir / 'covg_sample_files_{dset}.txt'),

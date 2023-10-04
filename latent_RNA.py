@@ -132,7 +132,7 @@ def prepare(infile: Path, regionfile: Path, pheno_files: list, batch_size: int, 
     batches = counts.groupby(regions['batch'])
     regions = regions.drop('batch', axis=1)
     if len(pheno_files) > 0:
-        # Load phenotypes to regress out:
+        print(f'Loading phenotypes from {len(pheno_files)} file{"" if len(pheno_files) == 1 else "s"} to regress out...', flush=True)
         phenos = [load_phenotypes(f, samples).reset_index() for f in pheno_files]
         phenos = pd.concat(phenos, axis=0)
         # Parse gene IDs from phenotype IDs:
