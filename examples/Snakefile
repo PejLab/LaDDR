@@ -52,13 +52,17 @@ rule get_gene_bins:
     output:
         working_dir / 'gene_bins.bed.gz',
     params:
-        n_bins = 10,
+        # n_bins = 10,
+        bin_width_coding = 8,
+        bin_width_noncoding = 16,
     shell:
         """
         python ../scripts/get_gene_bins.py \
             --gtf {input.gtf} \
             --chromosomes {input.chrom} \
-            --n-bins {params.n_bins} \
+            --binning-method bin-width \
+            --bin-width-coding {params.bin_width_coding} \
+            --bin-width-noncoding {params.bin_width_noncoding} \
             --output {output}
         """
 

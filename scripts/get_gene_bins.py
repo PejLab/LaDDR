@@ -38,24 +38,25 @@ def add_noncoding_regions(anno: pd.DataFrame) -> pd.DataFrame:
         'start': starts,
         'end': ends,
         'strand': strand,
-        'gene_id': anno.iloc[0].gene_id,
         'feature': features,
     })
     anno = pd.concat([anno, nc])
     # anno = anno.sort_values(by='start')  # Sort all together for efficiency
     return anno
 
-def split_region(region: pd.DataFrame, n_bins: int) -> pd.DataFrame:
+def split_region_bin_width(region: pd.DataFrame, bin_width_coding: int, bin_width_noncoding: int) -> pd.DataFrame:
     """Split a region into a fixed number of equal-sized bins"""
     assert region.shape[0] == 1
     region = list(region.itertuples(index=False))[0]
-    starts = np.linspace(region.start, region.end + 1, n_bins + 1, dtype=int)
+    bin_width = bin_width_coding if region.feature == 'exon' else bin_width_noncoding
+    starts = np.arange(region.start, region.end + 1, bin_width)
+    ends = starts + bin_width - 1
+    ends[-1] = region.end
     bins = pd.DataFrame({
         'seqname': region.seqname,
-        'start': starts[:-1],
-        'end': starts[1:] - 1,
+        'start': starts,
+        'end': ends,
         'strand': region.strand,
-        'gene_id': region.gene_id,
         'feature': region.feature,
     })
     assert bins.iloc[0].start == region.start
@@ -63,15 +64,49 @@ def split_region(region: pd.DataFrame, n_bins: int) -> pd.DataFrame:
     assert bins.start.unique().shape[0] == bins.shape[0]
     return bins
 
-def split_regions(anno: pd.DataFrame, n_bins: int) -> pd.DataFrame:
+def split_region_n_bins(region: pd.DataFrame, n_bins: int) -> pd.DataFrame:
+    """Split a region into a fixed number of equal-sized bins"""
+    assert region.shape[0] == 1
+    region = list(region.itertuples(index=False))[0]
+    if region.end - region.start < n_bins:
+        # If too small to split, do one bin per base and return fewer than n_bins bins
+        starts = np.arange(region.start, region.end + 1)
+        bins = pd.DataFrame({
+            'seqname': region.seqname,
+            'start': starts,
+            'end': starts,
+            'strand': region.strand,
+            'feature': region.feature,
+        })
+    else:
+        posns = np.linspace(region.start, region.end + 1, n_bins + 1, dtype=int)
+        bins = pd.DataFrame({
+            'seqname': region.seqname,
+            'start': posns[:-1],
+            'end': posns[1:] - 1,
+            'strand': region.strand,
+            'feature': region.feature,
+        })
+    assert bins.iloc[0].start == region.start
+    assert bins.iloc[-1].end == region.end
+    assert bins.start.unique().shape[0] == bins.shape[0]
+    return bins
+
+def split_regions_bin_width(anno: pd.DataFrame, bin_width_coding: int, bin_width_noncoding: int) -> pd.DataFrame:
+    """Split each region into bins of a certain width"""
+    anno['start2'] = anno['start']
+    anno = anno.groupby(['gene_id', 'start2'])
+    bins = anno.apply(lambda x: split_region_bin_width(x, bin_width_coding, bin_width_noncoding), include_groups=False)
+    bins = bins.reset_index(level='gene_id')
+    bins = bins.reset_index(drop=True)
+    return bins
+
+def split_regions_n_bins(anno: pd.DataFrame, n_bins: int) -> pd.DataFrame:
     """Split each region into a fixed number of equal-sized bins"""
-    # Filter out regions that are too small to split:
-    n_regions = anno.shape[0]
-    anno = anno[anno.end - anno.start >= n_bins]
-    n_removed = n_regions - anno.shape[0]
-    if n_removed > 0:
-        print(f'Removed {n_removed} features that were too small to split')
-    bins = anno.groupby(['gene_id', 'start']).apply(lambda x: split_region(x, n_bins))
+    anno['start2'] = anno['start']
+    anno = anno.groupby(['gene_id', 'start2'])
+    bins = anno.apply(lambda x: split_region_n_bins(x, n_bins), include_groups=False)
+    bins = bins.reset_index(level='gene_id')
     bins = bins.reset_index(drop=True)
     return bins
 
@@ -96,15 +131,18 @@ def remove_bins_overlapping_exon(bins: pd.DataFrame, exons: pd.DataFrame) -> pd.
     return bins
 
 parser = argparse.ArgumentParser(description='Get gene feature bins from GTF file')
-parser.add_argument('-g', '--gtf', type=Path, required=True, help='Transcript annotation in GTF format. Must be the collapsed annotation produced by `collapse_annotation.py`')
-parser.add_argument('-c', '--chromosomes', type=Path, required=True, help='Chromosome lengths file, e.g. chrNameLength.txt from STAR index, to sort chromosomes.')
-parser.add_argument('-o', '--output', type=Path, required=True, help='Output file (BED)')
-parser.add_argument('-n', '--n-bins', type=int, default=10, help='Number of bins to split each feature (exon, intron, etc.) into')
+parser.add_argument('-g', '--gtf', type=Path, required=True, metavar='FILE', help='Transcript annotation in GTF format. Must be the collapsed annotation produced by `collapse_annotation.py`.')
+parser.add_argument('-c', '--chromosomes', type=Path, required=True, metavar='FILE', help='Chromosome lengths file, e.g. chrNameLength.txt from STAR index, to sort chromosomes.')
+parser.add_argument('-o', '--output', type=Path, required=True, metavar='FILE', help='Output file (BED).')
+parser.add_argument('--binning-method', choices=['bin-width', 'n-bins'], default='bin-width', help='Whether to split all coding/noncoding regions into fixed-width bins, or split each region into a fixed number of bins. (default: %(default)s)')
+parser.add_argument('--bin-width-coding', type=int, default=8, metavar='N', help='For method "bin-width", width of bins for coding (exonic) regions of the genes. (default: %(default)s)')
+parser.add_argument('--bin-width-noncoding', type=int, default=16, metavar='N', help='For method "bin-width", width of bins for noncoding (non-exonic) regions of the genes. (default: %(default)s)')
+parser.add_argument('--n-bins', type=int, default=10, metavar='N', help='For method "n-bins", number of bins to split each feature (exon, intron, etc.) into. (default: %(default)s)')
 args = parser.parse_args()
 
 anno = read_gtf(args.gtf)
 # Require only one isoform per gene:
-n_iso = anno.groupby('gene_id').apply(lambda x: len(x['transcript_id'].unique()))
+n_iso = anno.groupby('gene_id')['transcript_id'].nunique()
 assert (n_iso == 1).all(), 'Multiple isoforms per gene found in GTF file. Use `collapse_annotation.py` with the `--collapse_only` argument to collapse the annotation to a single isoform per gene.'
 
 anno = anno.loc[anno['feature'] == 'exon', :]
@@ -113,14 +151,17 @@ exons = anno.copy() # Save all exons to check for overlap later
 # Keep only genes with biotype 'protein_coding':
 anno = anno.loc[anno['gene_type'] == 'protein_coding', :]
 
-anno = anno[['seqname', 'start', 'end', 'strand', 'gene_id', 'feature']]
+anno = anno[['gene_id', 'seqname', 'start', 'end', 'strand', 'feature']]
 anno = anno.sort_values(by=['gene_id', 'start'])
 
 # For each gene, add introns, upstream, and downstream regions:
-anno = anno.groupby('gene_id').apply(add_noncoding_regions)
-anno = anno.reset_index(drop=True)
+anno = anno.groupby('gene_id').apply(add_noncoding_regions, include_groups=False)
+anno = anno.reset_index(level='gene_id')
 anno = anno.sort_values(by=['gene_id', 'start'])
-bins = split_regions(anno, n_bins=args.n_bins)
+if args.binning_method == 'bin-width':
+    bins = split_regions_bin_width(anno, args.bin_width_coding, args.bin_width_noncoding)
+else:
+    bins = split_regions_n_bins(anno, args.n_bins)
 bins = remove_bins_overlapping_exon(bins, exons)
 
 # Sort bins using chromosome order from the chromosome lengths file:
