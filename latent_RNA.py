@@ -1,4 +1,4 @@
-"""Run PCA on feature bin coverage and create BED file"""
+"""Extract latent transcriptomic phenotypes from RNA-seq coverage data"""
 
 import argparse
 import math
@@ -51,53 +51,52 @@ class Model:
         
         Saves enough PCs to explain var_expl variance or n_pcs_max, whichever is smaller.
         """
-        df = df.loc[df.std(axis=1) > 0, :]
-        if df.shape[0] == 0:
-            return
-        x = df.values.T
-        # # Center and scale the data:
-        xmean = x.mean(axis=0)
-        xstd = x.std(axis=0)
-        x = (x - xmean) / xstd
         if self.fpca:
-            fd = FDataGrid(x, grid_points=df.index.get_level_values('start'))
+            self.SPLINE_ORDER = 4
+            n_bins_with_var = (df.std(axis=1) > 0).sum()
+            x = df.values.T
+            fd = FDataGrid(x, grid_points=df.index.get_level_values('pos'))
             # FPCA currently defaults to n_components=3, so we need to set it explicitly:
             # (There's no option for variance explained cutoff, so we'll subset the PCs later.)
-            n_comp = min(n_pcs_max, x.shape[0], x.shape[1])
-            basis_fd = fd.to_basis(BSplineBasis(n_basis=n_comp, order=4))
+            n_comp = min(n_pcs_max, x.shape[0], n_bins_with_var)
+            if n_comp < self.SPLINE_ORDER:
+                return
+            basis_fd = fd.to_basis(BSplineBasis(n_basis=n_comp, order=self.SPLINE_ORDER))
             # Must pass weights to avoid 'Matrix is not positive definite' error:
-            model = FPCA(n_components=n_comp, centering=False, _weights=np.ones(x.shape[1]))
+            model = FPCA(n_components=n_comp, _weights=np.ones(x.shape[1]))
             model.fit(basis_fd)
             subset_pcs_fpca(model, var_expl)
         else:
+            df = df.loc[df.std(axis=1) > 0, :]
+            if df.shape[0] == 0:
+                return
+            x = df.values.T
+            # Center and scale the data:
+            xmean = x.mean(axis=0)
+            xstd = x.std(axis=0)
+            x = (x - xmean) / xstd
             model = PCA(n_components=var_expl) if var_expl not in {0, 1} else PCA()
             model.fit(x)
             subset_pcs_pca(model, n_pcs_max)
+            self.features = pd.DataFrame(index=df.index) # Save feature stats for transforming new data
+            self.features['mean'] = xmean
+            self.features['std'] = xstd
         self.model = model
-        self.features = pd.DataFrame(index=df.index) # Save feature stats for transforming new data
-        self.features['mean'] = xmean
-        self.features['std'] = xstd
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """Apply functional PCA model to normalized coverage for one gene"""
         # Filter df to include same features as the model:
-        # print(df)
-        # print(self.features)
-        # assert False
-        df = df.loc[self.features.index, :]
-        x = df.values.T
-        # Center and scale the data using stats from the model-fitting data:
-        x = (x - self.features['mean'].values) / self.features['std'].values
         if self.fpca:
-            fd = FDataGrid(x, grid_points=df.index.get_level_values('start'))
-            # print(fd)
-            # assert False
+            x = df.values.T
+            fd = FDataGrid(x, grid_points=df.index.get_level_values('pos'))
             n_basis = self.model.components_.n_basis
-            basis_fd = fd.to_basis(BSplineBasis(n_basis=n_basis, order=4))
+            basis_fd = fd.to_basis(BSplineBasis(n_basis=n_basis, order=self.SPLINE_ORDER))
             mat = self.model.transform(basis_fd).T
-            # print(mat)
-            # assert False
         else:
+            df = df.loc[self.features.index, :]
+            x = df.values.T
+            # Center and scale the data using stats from the model-fitting data:
+            x = (x - self.features['mean'].values) / self.features['std'].values
             mat = self.model.transform(x).T
         pc_names = [f'PC{i + 1}' for i in range(mat.shape[0])]
         out = pd.DataFrame(mat, index=pc_names, columns=df.columns)
@@ -109,11 +108,16 @@ class Model:
         return out
 
 def load_regions(regionfile: Path) -> pd.DataFrame:
-    regions = pd.read_csv(regionfile, sep='\t', header=None, usecols=[1, 2, 3], names=['start', 'end', 'region'], index_col='region')
+    regions = pd.read_csv(regionfile, sep='\t', header=None, usecols=[3], names=['region'], index_col='region')
+    regions.index = regions.index.str.split('_', n=2, expand=True)
+    regions.index.set_names(['gene_id', 'start', 'end'], inplace=True)
+    regions = regions.reset_index()
+    regions['start'] = regions['start'].astype(int)
+    regions['end'] = regions['end'].astype(int)
     regions['length'] = regions['end'] - regions['start']
+    regions['pos'] = regions['start'] + regions['length'] // 2
+    regions = regions.set_index(['gene_id', 'pos'])
     regions = regions.drop(['start', 'end'], axis=1)
-    regions.index = regions.index.str.split('_', n=1, expand=True)
-    regions.index.set_names(['gene_id', 'start'], inplace=True)
     return regions
 
 def load_sample_covg_np(infiles: list, nrow: int) -> np.ndarray:
@@ -132,6 +136,8 @@ def load_sample_covg(infile: Path, regions: pd.DataFrame) -> pd.DataFrame:
     assert infiles['sample'].is_unique
     counts = load_sample_covg_np(infiles['path'], nrow=regions.shape[0])
     counts = pd.DataFrame(counts, index=regions.index, columns=infiles['sample'])
+    # Sort by gene and position along gene instead of genomic coordinate
+    counts = counts.sort_index()
     return counts
 
 def norm_counts_over_gene(counts: pd.DataFrame) -> pd.DataFrame:
@@ -296,34 +302,34 @@ def transform(batch_covg_dir: Path, models_dir: dict) -> pd.DataFrame:
     return out
 
 def create_parser():
-    parser = argparse.ArgumentParser(description='Fit and/or apply PCA model on feature bin coverage data')
+    parser = argparse.ArgumentParser(description='Fit and/or apply models on feature bin coverage data')
     subparsers = parser.add_subparsers(title='subcommands', dest='subcommand', required=True, help='Choose a subcommand')
 
     # Subparser for 'prepare'
     parser_prepare = subparsers.add_parser('prepare', help='Prepare batched input coverage files. Coverage counts will be assembled and saved in batches, `fit` will be run on each batch separately, and `transform` will run all batches and produce the combined output.')
     parser_prepare.add_argument('-i', '--inputs', type=Path, metavar='FILE', required=True, help='File containing paths to all per-sample coverage files. Each one has one integer per line corresponding to rows of `regions`.')
-    parser_prepare.add_argument('-r', '--regions', type=Path, metavar='FILE', required=True, help='BED file containing regions to use for PCA. Must have start, end and region ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of input coverage files.')
+    parser_prepare.add_argument('-r', '--regions', type=Path, metavar='FILE', required=True, help='BED file containing regions to use for model input data. Must have start, end and region ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of input coverage files.')
     parser_prepare_phenos = parser_prepare.add_mutually_exclusive_group(required=False)
-    parser_prepare_phenos.add_argument('-p', '--pheno-paths', nargs='+', type=Path, metavar='FILE', help='One or more paths to phenotype tables to regress out of the coverage data per gene before PCA. Files should be in bed format, i.e. input format for tensorqtl. Gene IDs are parsed from the 4th column from the start up to the first non-alphanumeric character.')
+    parser_prepare_phenos.add_argument('-p', '--pheno-paths', nargs='+', type=Path, metavar='FILE', help='One or more paths to phenotype tables to regress out of the coverage data per gene prior to model input. Files should be in bed format, i.e. input format for tensorqtl. Gene IDs are parsed from the 4th column from the start up to the first non-alphanumeric character.')
     parser_prepare_phenos.add_argument('--pheno-paths-file', type=Path, metavar='FILE', help='File containing list of paths to phenotype tables.')
     parser_prepare.add_argument('-d', '--output-dir', type=Path, metavar='DIR', required=True, help='Directory where per-batch numpy binary files will be written.')
     parser_prepare.add_argument('--batch-size', type=int, default=200, metavar='N', help='Number of genes (at most) per batch. Default 200.')
 
     # Subparser for 'fit'
-    parser_fit = subparsers.add_parser('fit', help='Fit PCA model')
+    parser_fit = subparsers.add_parser('fit', help='Fit FPCA or PCA models to coverage data')
     parser_fit_input = parser_fit.add_mutually_exclusive_group(required=True)
     parser_fit_input.add_argument('-d', '--batch-covg-dir', nargs='+', type=Path, metavar='DIR', help='Directory of per-batch numpy binary files. Specify multiple directories to load data from all of them and fit models using the combined dataset. All datasets must have been generated using the same gene bins file.')
     parser_fit_input.add_argument('--dir-file', type=Path, metavar='FILE', help='File containing list of directories of per-batch numpy binary files. Use this instead of -d/--gene-covg-dir in case of many directories.')
     parser_fit.add_argument('-b', '--batch', type=int, metavar='N', help='Batch number to load and fit. Batch numbers start from 0. If omitted, all batches will be loaded and fit in sequence.')
-    parser_fit.add_argument('-m', '--models-dir', type=Path, metavar='DIR', required=True, help='Directory in which to save PCA model pickle files.')
+    parser_fit.add_argument('-m', '--models-dir', type=Path, metavar='DIR', required=True, help='Directory in which to save model pickle files.')
     parser_fit.add_argument('-v', '--var-expl-max', type=float, default=0.8, metavar='FLOAT', help='Max variance explained by the PCs kept per gene. Pass 0 or 1 for no variance explained cutoff. Default 0.8.')
     parser_fit.add_argument('-n', '--n-pcs-max', type=int, default=32, metavar='N', help='Max number of PCs to keep per gene. Pass 0 for no cutoff. Default 32.')
     parser_fit.add_argument('--regular-pca', action='store_true', help='Use regular PCA instead of functional PCA.')
 
     # Subparser for 'transform'
-    parser_transform = subparsers.add_parser('transform', help='Apply PCA transformation')
+    parser_transform = subparsers.add_parser('transform', help='Apply fitted models to coverage data')
     parser_transform.add_argument('-d', '--batch-covg-dir', type=Path, metavar='DIR', required=True, help='Directory of per-batch numpy binary files.')
-    parser_transform.add_argument('-m', '--models-dir', type=Path, metavar='DIR', required=True, help='Directory of saved PCA models (*.pickle) to load and use for transformation.')
+    parser_transform.add_argument('-m', '--models-dir', type=Path, metavar='DIR', required=True, help='Directory of saved models (*.pickle) to load and use for transformation.')
     parser_transform.add_argument('-o', '--output', type=Path, metavar='FILE', required=True, help='Output file (TSV).')
 
     return parser

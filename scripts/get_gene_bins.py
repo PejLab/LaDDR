@@ -130,6 +130,21 @@ def remove_bins_overlapping_exon(bins: pd.DataFrame, exons: pd.DataFrame) -> pd.
     bins = bins.loc[~overlap, :]
     return bins
 
+def name_bins_with_gene_coords(bins: pd.DataFrame) -> pd.DataFrame:
+    """Name bins with gene-relative coordinates"""
+    assert bins['gene_id'].nunique() == 1
+    # Using strand to orient correctly, define gene start as the start of the first exon
+    if bins.iloc[0].strand == '+':
+        gene_start = bins.loc[bins['feature'] == 'exon', 'start'].min()
+        starts = bins['start'] - gene_start
+        ends = bins['end'] - gene_start
+    else:
+        gene_start = bins.loc[bins['feature'] == 'exon', 'end'].max()
+        starts = gene_start - bins['end']
+        ends = gene_start - bins['start']
+    bins['name'] = bins['gene_id'] + '_' + starts.astype(str) + '_' + ends.astype(str)
+    return bins
+
 parser = argparse.ArgumentParser(description='Get gene feature bins from GTF file')
 parser.add_argument('-g', '--gtf', type=Path, required=True, metavar='FILE', help='Transcript annotation in GTF format. Must be the collapsed annotation produced by `collapse_annotation.py`.')
 parser.add_argument('-c', '--chromosomes', type=Path, required=True, metavar='FILE', help='Chromosome lengths file, e.g. chrNameLength.txt from STAR index, to sort chromosomes.')
@@ -164,6 +179,12 @@ else:
     bins = split_regions_n_bins(anno, args.n_bins)
 bins = remove_bins_overlapping_exon(bins, exons)
 
+# Prepare BED format:
+bins['start'] = bins['start'] - 1
+bins['gene_id2'] = bins['gene_id']
+bins = bins.groupby('gene_id2').apply(name_bins_with_gene_coords, include_groups=False)
+bins = bins[['seqname', 'start', 'end', 'name', 'feature', 'strand']]
+
 # Sort bins using chromosome order from the chromosome lengths file:
 chrom = pd.read_csv(
     args.chromosomes,
@@ -176,8 +197,4 @@ chrom = list(chrom['chrom'])
 bins['seqname'] = pd.Categorical(bins['seqname'], categories=chrom, ordered=True)
 bins = bins.sort_values(by=['seqname', 'start'])
 
-# Prepare BED format:
-bins['start'] = bins['start'] - 1
-bins['name'] = bins['gene_id'] + '_' + bins['start'].astype(str)
-bins = bins[['seqname', 'start', 'end', 'name', 'feature', 'strand']]
 bins.to_csv(args.output, sep='\t', index=False, header=False)
