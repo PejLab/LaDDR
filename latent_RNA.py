@@ -24,7 +24,7 @@ class CoverageData:
             # Make sample IDs unique for concatenation, and ID won't be saved in the models anyway.
             self.samples = [f'S{i + 1}' for i in range(len(self.samples))]
         self.counts, self.regions = self.load_counts(batch_covg_dirs, batch_id)
-        self.genes = self.regions.groupby('gene_id').groups.keys()
+        self.genes = list(self.regions.groupby('gene_id').groups.keys())
 
     def load_counts(self, batch_covg_dirs: list, batch_id: int) -> tuple:
         mats = [np.load(d / f'covg_{batch_id}.npy') for d in batch_covg_dirs]
@@ -76,7 +76,12 @@ class Model:
             xstd = x.std(axis=0)
             x = (x - xmean) / xstd
             model = PCA(n_components=var_expl) if var_expl not in {0, 1} else PCA()
-            model.fit(x)
+            try:
+                model.fit(x)
+            except np.linalg.LinAlgError:
+                print("SVD did not converge, retrying with added noise", flush=True)
+                x += np.random.normal(0, 1e-6, size=x.shape)
+                model.fit(x)
             subset_pcs_pca(model, n_pcs_max)
             self.features = pd.DataFrame(index=df.index) # Save feature stats for transforming new data
             self.features['mean'] = xmean
@@ -140,26 +145,17 @@ def load_sample_covg(infile: Path, regions: pd.DataFrame) -> pd.DataFrame:
     counts = counts.sort_index()
     return counts
 
-def norm_counts_over_gene(counts: pd.DataFrame) -> pd.DataFrame:
-    """For one gene, scale coverage per sample to sum to 1 per sample
-    
-    Scale each total to 1, except for samples with 0 total, which are set to 0.
-    This is to prevent NaNs which would cause the entire gene to be dropped if
-    it had 0 expression in a single sample.
-    """
-    counts = counts.div(counts.sum(axis=0), axis=1)
-    counts = counts.fillna(0)
-    assert not counts.isna().any().any()
-    return counts
-
 def normalize_coverage(df: pd.DataFrame, regions: pd.DataFrame) -> pd.DataFrame:
     """Normalize coverage for each gene in one batch"""
+    # For log-transform, add pseudocount of 1 per bp:
+    df = df.add(regions['length'].loc[df.index], axis=0)
     # Normalize coverage to ignore total expression, i.e. total coverage per sample per gene sums to 1:
-    df = df.groupby('gene_id', group_keys=False).apply(norm_counts_over_gene)
+    df = df.groupby('gene_id', group_keys=False).apply(lambda x: x.div(x.sum(axis=0), axis=1))
+    assert not df.isna().any().any()
     # Normalize to mean read fraction per bp within each region:
     df = df.div(regions['length'].loc[df.index], axis=0)
     # Variance stabilization:
-    df = np.log2(df + 5)
+    df = np.log2(df)
     return df
 
 def load_phenotypes(pheno_file: Path, samples: list) -> pd.DataFrame:

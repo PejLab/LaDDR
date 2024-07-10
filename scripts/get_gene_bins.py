@@ -26,10 +26,12 @@ def add_noncoding_regions(anno: pd.DataFrame) -> pd.DataFrame:
     features.append('upstream' if strand == '+' else 'downstream')
     starts.append(max(1, anno.iloc[0].start - 1000))
     ends.append(anno.iloc[0].start - 1)
-    for i in range(len(anno) - 1):
-        features.append('intron')
-        starts.append(anno.iloc[i].end + 1)
-        ends.append(anno.iloc[i + 1].start - 1)
+    for i in range(anno.shape[0] - 1):
+        # Only add intron if there is a gap between exons:
+        if anno.iloc[i + 1].start - anno.iloc[i].end > 1:
+            features.append('intron')
+            starts.append(anno.iloc[i].end + 1)
+            ends.append(anno.iloc[i + 1].start - 1)
     features.append('downstream' if strand == '+' else 'upstream')
     starts.append(anno.iloc[-1].end + 1)
     ends.append(anno.iloc[-1].end + 1000)
@@ -133,6 +135,7 @@ def remove_bins_overlapping_exon(bins: pd.DataFrame, exons: pd.DataFrame) -> pd.
 def name_bins_with_gene_coords(bins: pd.DataFrame) -> pd.DataFrame:
     """Name bins with gene-relative coordinates"""
     assert bins['gene_id'].nunique() == 1
+    assert 'exon' in bins['feature'].values
     # Using strand to orient correctly, define gene start as the start of the first exon
     if bins.iloc[0].strand == '+':
         gene_start = bins.loc[bins['feature'] == 'exon', 'start'].min()
@@ -156,6 +159,11 @@ parser.add_argument('--n-bins', type=int, default=10, metavar='N', help='For met
 args = parser.parse_args()
 
 anno = read_gtf(args.gtf)
+# Newer versions return a polars DF by default, but not all versions allow
+# return type to be specified, so this handles older and newer versions:
+if type(anno).__module__ == 'polars.dataframe.frame':
+    anno = anno.to_pandas()
+
 # Require only one isoform per gene:
 n_iso = anno.groupby('gene_id')['transcript_id'].nunique()
 assert (n_iso == 1).all(), 'Multiple isoforms per gene found in GTF file. Use `collapse_annotation.py` with the `--collapse_only` argument to collapse the annotation to a single isoform per gene.'
@@ -178,6 +186,13 @@ if args.binning_method == 'bin-width':
 else:
     bins = split_regions_n_bins(anno, args.n_bins)
 bins = remove_bins_overlapping_exon(bins, exons)
+
+# Remove any genes with no exon regions remaining:
+n_genes_before = bins['gene_id'].nunique()
+bins = bins.groupby('gene_id').filter(lambda x: 'exon' in x['feature'].values)
+n_genes_after = bins['gene_id'].nunique()
+if n_genes_before != n_genes_after:
+    print(f'Removed {n_genes_before - n_genes_after} genes with no unique exonic regions')
 
 # Prepare BED format:
 bins['start'] = bins['start'] - 1

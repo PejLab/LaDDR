@@ -29,7 +29,7 @@ rule all:
 rule get_chrom_lengths:
     """Get chromosome lengths from genome FASTA index for bedtools"""
     input:
-        lambda w: f'{ref_genome}.fai',
+        f'{ref_genome}.fai',
     output:
         input_dir / 'chr_lengths.genome',
     shell:
@@ -102,6 +102,8 @@ rule prepare_coverage:
         covg_batch_dir = str(working_dir / 'covg_batch_{dset}'),
         covg_file_list = str(working_dir / 'covg_sample_files_{dset}.txt'),
         batch_size = 20,
+    resources:
+        mem_mb = 32000,
     shell:
         """
         mkdir -p {params.covg_batch_dir}
@@ -140,7 +142,7 @@ rule fit_models:
         """
 
 rule get_latent_phenotypes:
-    """Apply PCA models to generate latent phenotypes"""
+    """Apply models to generate latent phenotypes"""
     input:
         covg_batch = expand(str(working_dir / 'covg_batch_{{dset}}' / 'covg_{batch}.npy'), batch=range(N_BATCHES)),
         models = expand(str(working_dir / 'models' / 'models_{batch}.pickle'), batch=range(N_BATCHES)),
