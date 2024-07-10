@@ -29,7 +29,7 @@ rule all:
 rule get_chrom_lengths:
     """Get chromosome lengths from genome FASTA index for bedtools"""
     input:
-        lambda w: f'{ref_genome}.fai',
+        f'{ref_genome}.fai',
     output:
         input_dir / 'chr_lengths.genome',
     shell:
@@ -52,13 +52,17 @@ rule get_gene_bins:
     output:
         working_dir / 'gene_bins.bed.gz',
     params:
-        n_bins = 10,
+        # n_bins = 10,
+        bin_width_coding = 8,
+        bin_width_noncoding = 16,
     shell:
         """
         python ../scripts/get_gene_bins.py \
             --gtf {input.gtf} \
             --chromosomes {input.chrom} \
-            --n-bins {params.n_bins} \
+            --binning-method bin-width \
+            --bin-width-coding {params.bin_width_coding} \
+            --bin-width-noncoding {params.bin_width_noncoding} \
             --output {output}
         """
 
@@ -98,6 +102,8 @@ rule prepare_coverage:
         covg_batch_dir = str(working_dir / 'covg_batch_{dset}'),
         covg_file_list = str(working_dir / 'covg_sample_files_{dset}.txt'),
         batch_size = 20,
+    resources:
+        mem_mb = 32000,
     shell:
         """
         mkdir -p {params.covg_batch_dir}
@@ -136,7 +142,7 @@ rule fit_models:
         """
 
 rule get_latent_phenotypes:
-    """Apply PCA models to generate latent phenotypes"""
+    """Apply models to generate latent phenotypes"""
     input:
         covg_batch = expand(str(working_dir / 'covg_batch_{{dset}}' / 'covg_{batch}.npy'), batch=range(N_BATCHES)),
         models = expand(str(working_dir / 'models' / 'models_{batch}.pickle'), batch=range(N_BATCHES)),

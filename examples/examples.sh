@@ -24,6 +24,9 @@ gzip data_bash_script/collapsed.gtf
 python ../scripts/get_gene_bins.py \
     --gtf data_bash_script/collapsed.gtf.gz \
     --chromosomes data_input/chr_lengths.genome \
+    --binning-method bin-width \
+    --bin-width-coding 8 \
+    --bin-width-noncoding 16 \
     --output data_bash_script/gene_bins.bed.gz
 
 ######################

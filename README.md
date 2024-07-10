@@ -57,8 +57,8 @@ awk '{print "covg/"$1".txt"}' samples.txt > covgfiles.txt
 There are three stages to generate latent phenotypes from coverage counts:
 
 1. `prepare`: Per-sample coverage files are first assembled into a bin by sample matrix, normalized, split into batches of N genes each, and saved.
-2. `fit`: Coverage count matrices are loaded, one batch at a time, and used to fit a PCA model for each gene. If a project involves multiple datasets, e.g. tissues, the coverage count matrices for each dataset can be loaded and concatenated, and the models fit on the concatenated data.
-3. `transform`: Coverage count matrices are loaded, one batch at a time, and used to transform the data using the fitted PCA models. The transformed data is saved as a table of samples by phenotypes, i.e. multiple PCs per gene. If a project involves multiple datasets, the coverage count matrices for each dataset can be loaded and transformed separately using the same set of models, so that the phenotypes correspond across datasets.
+2. `fit`: Coverage count matrices are loaded, one batch at a time, and used to fit an FPCA or PCA model for each gene. If a project involves multiple datasets, e.g. tissues, the coverage count matrices for each dataset can be loaded together, and the models will be fit on the concatenated data.
+3. `transform`: Coverage count matrices are loaded, one batch at a time, and used to transform the data using the fitted models. The transformed data is saved as a table of samples by phenotypes, i.e. multiple PCs per gene. If a project involves multiple datasets, the coverage count matrices for each dataset can be loaded and transformed separately using the same set of models, so that the phenotypes correspond across datasets.
 
 `examples/` contains a bash script with examples of running these steps in different scenarios. It also contains a `Snakefile` that can be modified as needed and used to run the steps in a [Snakemake](https://snakemake.readthedocs.io/en/stable/) workflow.
 
@@ -67,7 +67,7 @@ There are three stages to generate latent phenotypes from coverage counts:
 ```
 usage: latent_RNA.py [-h] {prepare,fit,transform} ...
 
-Fit and/or apply PCA model on feature bin coverage data
+Fit and/or apply models on feature bin coverage data
 
 options:
   -h, --help            show this help message and exit
@@ -75,11 +75,10 @@ options:
 subcommands:
   {prepare,fit,transform}
                         Choose a subcommand
-    prepare             Prepare batched input coverage files. Coverage counts will be assembled and
-                        saved in batches, `fit` will be run on each batch separately, and
-                        `transform` will run all batches and produce the combined output.
-    fit                 Fit PCA model
-    transform           Apply PCA transformation
+    prepare             Prepare batched input coverage files. Coverage counts will be assembled and saved in batches, `fit` will be run on each batch
+                        separately, and `transform` will run all batches and produce the combined output.
+    fit                 Fit FPCA or PCA models to coverage data
+    transform           Apply fitted models to coverage data
 ```
 
 ```
@@ -90,10 +89,12 @@ options:
   -i FILE, --inputs FILE
                         File containing paths to all per-sample coverage files. Each one has one integer per line corresponding to rows of `regions`.
   -r FILE, --regions FILE
-                        BED file containing regions to use for PCA. Must have start, end and region ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of input coverage files.
+                        BED file containing regions to use for model input data. Must have start, end and region ID in 2nd, 3rd, and 4th columns.
+                        Rows must correspond to rows of input coverage files.
   -p FILE [FILE ...], --pheno-paths FILE [FILE ...]
-                        One or more paths to phenotype tables to regress out of the coverage data per gene before PCA. Files should be in bed format, i.e. input format for tensorqtl. Gene IDs are parsed from the
-                        4th column from the start up to the first non-alphanumeric character.
+                        One or more paths to phenotype tables to regress out of the coverage data per gene prior to model input. Files should be in
+                        bed format, i.e. input format for tensorqtl. Gene IDs are parsed from the 4th column from the start up to the first non-
+                        alphanumeric character.
   --pheno-paths-file FILE
                         File containing list of paths to phenotype tables.
   -d DIR, --output-dir DIR
@@ -102,29 +103,22 @@ options:
 ```
 
 ```
-usage: latent_RNA.py fit [-h] (-d DIR [DIR ...] | --dir-file FILE) [-b N] -m DIR
-                         [--n-samples-max N] [-v FLOAT] [-n N]
+usage: latent_RNA.py fit [-h] (-d DIR [DIR ...] | --dir-file FILE) [-b N] -m DIR [-v FLOAT] [-n N] [--regular-pca]
 
 options:
   -h, --help            show this help message and exit
   -d DIR [DIR ...], --batch-covg-dir DIR [DIR ...]
-                        Directory of per-batch numpy binary files. Specify multiple directories to
-                        load data from all of them and fit models using the combined dataset. All
-                        datasets must have been generated using the same gene bins file.
-  --dir-file FILE       File containing list of directories of per-batch numpy binary files. Use
-                        this instead of -d/--gene-covg-dir in case of many directories.
-  -b N, --batch N       Batch number to load and fit. Batch numbers start from 0. If omitted, all
-                        batches will be loaded and fit in sequence.
+                        Directory of per-batch numpy binary files. Specify multiple directories to load data from all of them and fit models using
+                        the combined dataset. All datasets must have been generated using the same gene bins file.
+  --dir-file FILE       File containing list of directories of per-batch numpy binary files. Use this instead of -d/--gene-covg-dir in case of many
+                        directories.
+  -b N, --batch N       Batch number to load and fit. Batch numbers start from 0. If omitted, all batches will be loaded and fit in sequence.
   -m DIR, --models-dir DIR
-                        Directory to save PCA model pickle files
-  --n-samples-max N     Max number of samples to use for fitting PCA models faster. Loaded samples
-                        are randomly subsetted if higher than this, done after loading and
-                        concatenating data from multiple datasets if applicable, and the sample
-                        subsets are chosen independently per gene. Pass 0 for no cutoff.
+                        Directory in which to save model pickle files.
   -v FLOAT, --var-expl-max FLOAT
-                        Max variance explained by the PCs kept per gene. Pass 0 or 1 for no
-                        variance explained cutoff. Default 0.8.
+                        Max variance explained by the PCs kept per gene. Pass 0 or 1 for no variance explained cutoff. Default 0.8.
   -n N, --n-pcs-max N   Max number of PCs to keep per gene. Pass 0 for no cutoff. Default 32.
+  --regular-pca         Use regular PCA instead of functional PCA.
 ```
 
 ```
@@ -135,7 +129,7 @@ options:
   -d DIR, --batch-covg-dir DIR
                         Directory of per-batch numpy binary files.
   -m DIR, --models-dir DIR
-                        Directory of saved PCA models (*.pickle) to load and use for transformation
+                        Directory of saved models (*.pickle) to load and use for transformation.
   -o FILE, --output FILE
-                        Output file (TSV)
+                        Output file (TSV).
 ```
