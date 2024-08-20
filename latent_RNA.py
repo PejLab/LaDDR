@@ -41,10 +41,11 @@ class CoverageData:
             yield gene_id, df
 
 class Model:
-    def __init__(self, fpca):
+    def __init__(self, fpca: bool, fpca_x_values: str):
         self.model = None
         self.features = None
         self.fpca = fpca
+        self.fpca_x_values = fpca_x_values
 
     def fit(self, df: pd.DataFrame, var_expl: float, n_pcs_max: int):
         """Fit functional PCA model to normalized coverage for one gene
@@ -55,7 +56,10 @@ class Model:
             self.SPLINE_ORDER = 4
             n_bins_with_var = (df.std(axis=1) > 0).sum()
             x = df.values.T
-            fd = FDataGrid(x, grid_points=df.index.get_level_values('pos'))
+            if self.fpca_x_values == 'bin':
+                fd = FDataGrid(x, grid_points=np.arange(x.shape[1]))
+            else:
+                fd = FDataGrid(x, grid_points=df.index.get_level_values('pos'))
             # FPCA currently defaults to n_components=3, so we need to set it explicitly:
             # (There's no option for variance explained cutoff, so we'll subset the PCs later.)
             n_comp = min(n_pcs_max, x.shape[0], n_bins_with_var)
@@ -93,7 +97,10 @@ class Model:
         # Filter df to include same features as the model:
         if self.fpca:
             x = df.values.T
-            fd = FDataGrid(x, grid_points=df.index.get_level_values('pos'))
+            if self.fpca_x_values == 'bin':
+                fd = FDataGrid(x, grid_points=np.arange(x.shape[1]))
+            else:
+                fd = FDataGrid(x, grid_points=df.index.get_level_values('pos'))
             n_basis = self.model.components_.n_basis
             basis_fd = fd.to_basis(BSplineBasis(n_basis=n_basis, order=self.SPLINE_ORDER))
             mat = self.model.transform(basis_fd).T
@@ -247,18 +254,18 @@ def subset_pcs_pca(pca: PCA, n_pcs_max: int):
         pca.singular_values_ = pca.singular_values_[:n_pcs_max]
         pca.noise_variance_ = None # Could compute if necessary, but omitting otherwise
 
-def fit_batch(batch_covg_dirs: list, batch: int, var_expl_max: float, n_pcs_max: int, fpca: bool = True) -> dict:
+def fit_batch(batch_covg_dirs: list, batch: int, var_expl_max: float, n_pcs_max: int, fpca: bool = True, fpca_x_values: str = 'bin') -> dict:
     """Fit functional PCA models for all genes in a batch"""
     covg = CoverageData(batch_covg_dirs, batch)
     models = {'var_expl_max': var_expl_max, 'n_pcs_max': n_pcs_max, 'models': {}}
     for gene_id, x in tqdm(covg.by_gene(), total=len(covg.genes), desc="Fitting models"):
-        model = Model(fpca)
+        model = Model(fpca, fpca_x_values)
         model.fit(x, var_expl_max, n_pcs_max)
         if model.model is not None:
             models['models'][gene_id] = model
     return models
 
-def fit(batch_covg_dirs: list, batch_id: int, var_expl_max: float, n_pcs_max: int, output_dir: Path, fpca: bool = True):
+def fit(batch_covg_dirs: list, batch_id: int, var_expl_max: float, n_pcs_max: int, output_dir: Path, fpca: bool = True, fpca_x_values: str = 'bin'):
     """Fit functional PCA models for all genes in one or more batches"""
     if batch_id is None:
         with open(batch_covg_dirs[0] / 'batches.txt') as f:
@@ -268,7 +275,7 @@ def fit(batch_covg_dirs: list, batch_id: int, var_expl_max: float, n_pcs_max: in
     output_dir.mkdir(exist_ok=True)
     for batch in batches:
         print(f'=== Fitting models for batch {batch} ===', flush=True)
-        models = fit_batch(batch_covg_dirs, batch, var_expl_max, n_pcs_max, fpca)
+        models = fit_batch(batch_covg_dirs, batch, var_expl_max, n_pcs_max, fpca, fpca_x_values)
         outfile = output_dir / f'models_{batch}.pickle'
         with open(outfile, 'wb') as f:
             pickle.dump(models, f)
@@ -320,6 +327,7 @@ def create_parser():
     parser_fit.add_argument('-m', '--models-dir', type=Path, metavar='DIR', required=True, help='Directory in which to save model pickle files.')
     parser_fit.add_argument('-v', '--var-expl-max', type=float, default=0.8, metavar='FLOAT', help='Max variance explained by the PCs kept per gene. Pass 0 or 1 for no variance explained cutoff. Default 0.8.')
     parser_fit.add_argument('-n', '--n-pcs-max', type=int, default=32, metavar='N', help='Max number of PCs to keep per gene. Pass 0 for no cutoff. Default 32.')
+    parser_fit.add_argument('--fpca-x-values', type=str, choices=['bin', 'pos'], default='pos', metavar='STRING', help='Whether to use bin numbers or genomic positions as x-values for functional PCA. Default is genomic positions.')
     parser_fit.add_argument('--regular-pca', action='store_true', help='Use regular PCA instead of functional PCA.')
 
     # Subparser for 'transform'
@@ -350,7 +358,7 @@ if __name__ == '__main__':
         else:
             with open(args.dir_file) as f:
                 batch_covg_dirs = [Path(l.strip()) for l in f]
-        fit(batch_covg_dirs, args.batch, args.var_expl_max, args.n_pcs_max, args.models_dir, not args.regular_pca)
+        fit(batch_covg_dirs, args.batch, args.var_expl_max, args.n_pcs_max, args.models_dir, not args.regular_pca, args.fpca_x_values)
     elif args.subcommand == 'transform':
         print('=== Generating latent phenotypes ===', flush=True)
         output = transform(args.batch_covg_dir, args.models_dir)
