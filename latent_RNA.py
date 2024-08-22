@@ -23,10 +23,10 @@ class CoverageData:
         if len(batch_covg_dirs) > 1:
             # Make sample IDs unique for concatenation, and ID won't be saved in the models anyway.
             self.samples = [f'S{i + 1}' for i in range(len(self.samples))]
-        self.counts, self.regions = self.load_counts(batch_covg_dirs, batch_id)
+        self.coverage, self.regions = self.load_coverage(batch_covg_dirs, batch_id)
         self.genes = list(self.regions.groupby('gene_id').groups.keys())
 
-    def load_counts(self, batch_covg_dirs: list, batch_id: int) -> tuple:
+    def load_coverage(self, batch_covg_dirs: list, batch_id: int) -> tuple:
         mats = [np.load(d / f'covg_{batch_id}.npy') for d in batch_covg_dirs]
         mat = np.concatenate(mats, axis=1)
         region_file = batch_covg_dirs[0] / f'covg_{batch_id}.regions.tsv.gz'
@@ -37,7 +37,7 @@ class CoverageData:
         return df, regions
 
     def by_gene(self) -> Iterator[tuple]:
-        for gene_id, df in self.counts.groupby('gene_id'):
+        for gene_id, df in self.coverage.groupby('gene_id'):
             yield gene_id, df
 
 class Model:
