@@ -23,19 +23,23 @@ This step also filters genes to include only those with `gene_biotype`/`gene_typ
 #### Command line options
 
 ```
-usage: get_gene_bins.py [-h] -g GTF -c CHROMOSOMES [-n N_BINS] -o OUTPUT
+usage: get_gene_bins.py [-h] -g FILE -c FILE -o FILE [--binning-method {bin-width,n-bins}] [--bin-width-coding N] [--bin-width-noncoding N] [--n-bins N]
 
 Get gene feature bins from GTF file
 
 options:
   -h, --help            show this help message and exit
-  -g GTF, --gtf GTF     GTF file
-  -c CHROMOSOMES, --chromosomes CHROMOSOMES
+  -g FILE, --gtf FILE   Transcript annotation in GTF format. Must be the collapsed annotation produced by `collapse_annotation.py`.
+  -c FILE, --chromosomes FILE
                         Chromosome lengths file, e.g. chrNameLength.txt from STAR index, to sort chromosomes.
-  -n N_BINS, --n-bins N_BINS
-                        Number of bins to split each feature (exon, intron, etc.) into
-  -o OUTPUT, --output OUTPUT
-                        Output file (BED)
+  -o FILE, --output FILE
+                        Output file (BED).
+  --binning-method {bin-width,n-bins}
+                        Whether to split all coding/noncoding regions into fixed-width bins, or split each region into a fixed number of bins. (default: n-bins)
+  --bin-width-coding N  For method "bin-width", width of bins for coding (exonic) regions of the genes. (default: 16)
+  --bin-width-noncoding N
+                        For method "bin-width", width of bins for noncoding (non-exonic) regions of the genes. (default: 128)
+  --n-bins N            For method "n-bins", number of bins to split each feature (exon, intron, etc.) into. (default: 24)
 ```
 
 ### 2. RNA-seq coverage counts
@@ -52,7 +56,7 @@ This produces a files for each sample containing the bin counts, one per line, c
 awk '{print "covg/"$1".txt"}' samples.txt > covgfiles.txt
 ```
 
-### 3. Generating latent phenotypes
+### 3. Generate latent phenotypes
 
 There are three stages to generate latent phenotypes from coverage counts:
 
@@ -89,35 +93,35 @@ options:
   -i FILE, --inputs FILE
                         File containing paths to all per-sample coverage files. Each one has one integer per line corresponding to rows of `regions`.
   -r FILE, --regions FILE
-                        BED file containing regions to use for model input data. Must have start, end and region ID in 2nd, 3rd, and 4th columns.
-                        Rows must correspond to rows of input coverage files.
+                        BED file containing regions to use for model input data. Must have start, end and region ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of input coverage files.
   -p FILE [FILE ...], --pheno-paths FILE [FILE ...]
-                        One or more paths to phenotype tables to regress out of the coverage data per gene prior to model input. Files should be in
-                        bed format, i.e. input format for tensorqtl. Gene IDs are parsed from the 4th column from the start up to the first non-
-                        alphanumeric character.
+                        One or more paths to phenotype tables to regress out of the coverage data per gene prior to model input. Files should be in bed format, i.e. input format for tensorqtl. Gene IDs are
+                        parsed from the 4th column from the start up to the first non-alphanumeric character.
   --pheno-paths-file FILE
                         File containing list of paths to phenotype tables.
   -d DIR, --output-dir DIR
                         Directory where per-batch numpy binary files will be written.
-  --batch-size N        Number of genes (at most) per batch. Default 200.
+  --batch-size N        Number of genes (at most) per batch. (default: 200)
 ```
 
 ```
-usage: latent_RNA.py fit [-h] (-d DIR [DIR ...] | --dir-file FILE) [-b N] -m DIR [-v FLOAT] [-n N] [--regular-pca]
+usage: latent_RNA.py fit [-h] (-d DIR [DIR ...] | --dir-file FILE) [-b N] -m DIR [-v FLOAT] [-n N] [--fpca-x-values STRING] [--fpca-basis STRING] [--regular-pca]
 
 options:
   -h, --help            show this help message and exit
   -d DIR [DIR ...], --batch-covg-dir DIR [DIR ...]
-                        Directory of per-batch numpy binary files. Specify multiple directories to load data from all of them and fit models using
-                        the combined dataset. All datasets must have been generated using the same gene bins file.
-  --dir-file FILE       File containing list of directories of per-batch numpy binary files. Use this instead of -d/--gene-covg-dir in case of many
-                        directories.
+                        Directory of per-batch numpy binary files. Specify multiple directories to load data from all of them and fit models using the combined dataset. All datasets must have been generated
+                        using the same gene bins file.
+  --dir-file FILE       File containing list of directories of per-batch numpy binary files. Use this instead of -d/--gene-covg-dir in case of many directories.
   -b N, --batch N       Batch number to load and fit. Batch numbers start from 0. If omitted, all batches will be loaded and fit in sequence.
   -m DIR, --models-dir DIR
                         Directory in which to save model pickle files.
   -v FLOAT, --var-expl-max FLOAT
-                        Max variance explained by the PCs kept per gene. Pass 0 or 1 for no variance explained cutoff. Default 0.8.
-  -n N, --n-pcs-max N   Max number of PCs to keep per gene. Pass 0 for no cutoff. Default 32.
+                        Max variance explained by the PCs kept per gene. Pass 0 or 1 for no variance explained cutoff. (default: 0.8)
+  -n N, --n-pcs-max N   Max number of PCs to keep per gene. Pass 0 for no cutoff. (default: 16)
+  --fpca-x-values STRING
+                        Whether to use bin numbers or genomic positions as x-values for functional PCA. (default: bin)
+  --fpca-basis STRING   Basis function to use for functional PCA. `discrete` will run discretized FPCA directly on the data, `spline` will use a 4th-order B-spline basis. (default: discrete)
   --regular-pca         Use regular PCA instead of functional PCA.
 ```
 
