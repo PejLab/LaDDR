@@ -7,11 +7,12 @@ import pickle
 from typing import Iterator
 import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
 from skfda.preprocessing.dim_reduction import FPCA
 from skfda.representation.basis import BSplineBasis
 from skfda.representation.grid import FDataGrid
 from sklearn.linear_model import LinearRegression
+from sklearn.decomposition import PCA
+import statsmodels.api as sm
 from tqdm import tqdm
 
 class CoverageData:
@@ -189,14 +190,24 @@ def load_phenotypes(pheno_file: Path, samples: list) -> pd.DataFrame:
     df = df[samples]
     return df
 
+def regress_out_phenos_single(y: pd.Series, x: np.array, gene_id: str) -> pd.DataFrame:
+    """Regress out phenotypes from one feature (bin)"""
+    # Subset to nominally significant regression features
+    x_const = sm.add_constant(x)
+    model_all = sm.OLS(y, x_const).fit()
+    assert model_all.pvalues.index[0] == 'const'
+    x_sig = x[:, model_all.pvalues[1:] < 0.01] # exclude intercept
+    if x_sig.shape[1] == 0:
+        return y
+    model = LinearRegression().fit(x_sig, y)
+    resid = y - model.predict(x_sig)
+    return pd.Series(resid, index=y.index)
+
 def regress_out_phenos(df: pd.DataFrame, phenos: pd.core.groupby.DataFrameGroupBy, gene_id: str) -> pd.DataFrame:
     """Regress out phenotypes per gene"""
     if gene_id in phenos.groups:
         x = phenos.get_group(gene_id).to_numpy().T
-        y = df.to_numpy().T
-        model = LinearRegression().fit(x, y)
-        y = y - model.predict(x)
-        df = pd.DataFrame(y.T, index=df.index, columns=df.columns)
+        df = df.apply(regress_out_phenos_single, axis=1, args=(x, gene_id)) # axis=1 means by row, i.e. index of Series is column names
     return df
 
 def prepare(infile: Path, regionfile: Path, pheno_files: list, batch_size: int, outdir: Path):
