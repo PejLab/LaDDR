@@ -17,6 +17,14 @@ from tqdm import tqdm
 
 class CoverageData:
     def __init__(self, norm_covg_dirs: list, batch_id: int):
+        """Load normalized coverage data for one batch
+
+        Args:
+            norm_covg_dirs: List of directories containing normalized coverage
+              data, e.g. to train models on multiple datasets. To load a single
+              dataset, pass a list with one directory.
+            batch_id: ID of the batch to load.
+        """
         self.samples = []
         for d in norm_covg_dirs:
             with open(d / 'samples.txt') as f:
@@ -28,6 +36,13 @@ class CoverageData:
         self.genes = list(self.bins.groupby('gene_id').groups.keys())
 
     def load_coverage(self, norm_covg_dirs: list, batch_id: int) -> tuple:
+        """Load normalized coverage data for one batch
+        
+        Args:
+            norm_covg_dirs: List of directories containing normalized coverage
+              data.
+            batch_id: ID of the batch to load.
+        """
         mats = [np.load(d / f'batch_{batch_id}.npy') for d in norm_covg_dirs]
         mat = np.concatenate(mats, axis=1)
         bin_file = norm_covg_dirs[0] / f'batch_{batch_id}.bins.tsv.gz'
@@ -38,11 +53,26 @@ class CoverageData:
         return df, bins
 
     def by_gene(self) -> Iterator[tuple]:
+        """Iterate over coverage data for each gene
+        
+        Yields:
+            Tuple of gene ID and coverage DataFrame for the gene
+        """
         for gene_id, df in self.coverage.groupby('gene_id'):
             yield gene_id, df
 
 class Model:
     def __init__(self, fpca: bool, fpca_x_values: str, fpca_basis: str):
+        """Initialize a model object
+
+        Args:
+            fpca: Whether to fit a functional PCA model instead of regular PCA.
+            fpca_x_values: Whether to use bin numbers or genomic positions as
+              x-values for functional PCA. Options are 'bin' and 'pos'.
+            fpca_basis: Basis function to use for functional PCA. Options are
+              'discrete' for discretized FPCA directly on the data, and 'spline'
+              for a 4th-order B-spline basis.
+        """
         self.model = None
         self.features = None
         self.fpca = fpca
@@ -52,7 +82,16 @@ class Model:
     def fit(self, df: pd.DataFrame, var_expl: float, n_pcs_max: int):
         """Fit functional PCA model to normalized coverage for one gene
         
-        Saves enough PCs to explain var_expl variance or n_pcs_max, whichever is smaller.
+        Saves enough PCs to explain var_expl variance or n_pcs_max, whichever
+        is smaller.
+
+        Args:
+            df: The input DataFrame containing normalized coverage per bin per
+              sample.
+            var_expl: Maximum variance explained by the PCs kept per gene. Pass
+              0 or 1 for no variance explained cutoff.
+            n_pcs_max: Maximum number of PCs to keep per gene. Pass 0 for no
+              cutoff.
         """
         if self.fpca:
             n_bins_with_var = (df.std(axis=1) > 0).sum()
@@ -102,7 +141,16 @@ class Model:
         self.model = model
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply functional PCA model to normalized coverage for one gene"""
+        """Apply functional PCA model to normalized coverage for one gene
+        
+        Args:
+            df: The input DataFrame containing normalized coverage per bin per
+              sample.
+
+        Returns:
+            The DataFrame of transformed data, with gene ID and PC number as
+            index levels and sample IDs as columns.
+        """
         # Filter df to include same features as the model:
         if self.fpca:
             x = df.values.T
@@ -130,6 +178,18 @@ class Model:
         return out
 
 def load_bins(binfile: Path) -> pd.DataFrame:
+    """Load bin information from a BED file
+
+    Args:
+        binfile: Path to the BED file containing bin information. Only the
+          4th column (bin ID) is used. It is parsed into gene ID, start, and end
+          separated by underscores. Rows must correspond to rows of the input
+          coverage file.
+
+    Returns:
+        The DataFrame containing bin information. Rows are bins and columns are
+        gene_id, pos (of bin center), and length.
+    """
     bins = pd.read_csv(binfile, sep='\t', header=None, usecols=[3], names=['bin'], index_col='bin')
     bins.index = bins.index.str.split('_', n=2, expand=True)
     bins.index.set_names(['gene_id', 'start', 'end'], inplace=True)
@@ -147,6 +207,7 @@ def normalize_coverage(df: pd.DataFrame, bins: pd.DataFrame) -> pd.DataFrame:
 
     Args:
         df: The input DataFrame containing mean coverage per bin per sample.
+          Rows are bins and columns are samples.
         bins: The input DataFrame containing bin information.
 
     Returns:
@@ -177,7 +238,8 @@ def load_phenotypes(pheno_file: Path, samples: list) -> pd.DataFrame:
         samples: List of sample IDs.
 
     Returns:
-        The phenotype table DataFrame.
+        The phenotype table DataFrame. Rows are phenotypes and columns are
+        samples in the same order as the input list.
     
     Raises:
         AssertionError: If the phenotype table is missing any samples

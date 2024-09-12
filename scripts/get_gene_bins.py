@@ -18,11 +18,20 @@ def add_noncoding_regions(anno: pd.DataFrame) -> pd.DataFrame:
     """Add noncoding regions to the annotations for one gene
     
     Inserts an intron between each pair of consecutive exons, and adds
-    fixed-length upstream and downstream regions.
+    fixed-length (1kb) upstream and downstream regions.
+
+    Args:
+        anno: DataFrame with columns 'seqname', 'start', 'end', 'strand',
+        'feature'
+
+    Returns:
+        DataFrame that is the input DataFrame with additional rows for noncoding
+        regions
     """
     strand = anno.iloc[0].strand
     assert strand in {'+', '-'}
     assert anno.start.unique().shape[0] == anno.shape[0]
+    assert (anno.feature == 'exon').all()
     features, starts, ends = [], [], []
     features.append('upstream' if strand == '+' else 'downstream')
     starts.append(max(1, anno.iloc[0].start - 1000))
@@ -48,7 +57,19 @@ def add_noncoding_regions(anno: pd.DataFrame) -> pd.DataFrame:
     return anno
 
 def split_region_bin_width(region: pd.DataFrame, bin_width_coding: int, bin_width_noncoding: int) -> pd.DataFrame:
-    """Split a region into a fixed number of equal-sized bins"""
+    """Split a region into a fixed number of equal-sized bins
+    
+    Args:
+        region: DataFrame with one row representing the region to split. Must
+          have columns 'seqname', 'start', 'end', 'strand', 'feature'
+        bin_width_coding: Width of bins for coding regions (feature == 'exon')
+        bin_width_noncoding: Width of bins for noncoding regions (feature !=
+          'exon')
+
+    Returns:
+        DataFrame with one row per bin, with columns 'seqname', 'start', 'end',
+        'strand', 'feature'
+    """
     assert region.shape[0] == 1
     region = list(region.itertuples(index=False))[0]
     bin_width = bin_width_coding if region.feature == 'exon' else bin_width_noncoding
@@ -68,7 +89,16 @@ def split_region_bin_width(region: pd.DataFrame, bin_width_coding: int, bin_widt
     return bins
 
 def split_region_n_bins(region: pd.DataFrame, n_bins: int) -> pd.DataFrame:
-    """Split a region into a fixed number of equal-sized bins"""
+    """Split a region into a fixed number of equal-sized bins
+
+    Args:
+        region: DataFrame with one row representing the region to split
+        n_bins: Number of bins to split the region into
+
+    Returns:
+        DataFrame with one row per bin, with columns 'seqname', 'start', 'end',
+        'strand', 'feature'
+    """
     assert region.shape[0] == 1
     region = list(region.itertuples(index=False))[0]
     if region.end - region.start < n_bins:
@@ -150,7 +180,7 @@ def name_bins_with_gene_coords(bins: pd.DataFrame) -> pd.DataFrame:
     return bins
 
 def load_chromosomes(chrom_file: Path) -> list:
-    # Use chromosome lengths file to correctly sort BED file
+    """Use chromosome lengths file to correctly sort BED file"""
     chrom = pd.read_csv(
         chrom_file,
         sep='\t',
@@ -161,7 +191,7 @@ def load_chromosomes(chrom_file: Path) -> list:
     return list(chrom['chrom'])
 
 def save_bed(bins: pd.DataFrame, chromosomes: Path, outfile: Path):
-    # Prepare BED format:
+    """Prepare BED format"""
     bins['start'] = bins['start'] - 1
     bins['gene_id2'] = bins['gene_id']
     bins = bins.groupby('gene_id2').apply(name_bins_with_gene_coords, include_groups=False)
