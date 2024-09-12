@@ -22,8 +22,10 @@ localrules:
 
 rule all:
     input:
-        # working_dir / 'covg_batch_dset1' / 'covg_0.npy',
-        # working_dir / 'models' / 'models_0.pickle',
+        # expand(working_dir / 'gene_bins' / 'batch_{batch}.bed.gz', batch=range(N_BATCHES)),
+        # expand(working_dir / 'covg_binned_dset1' / 'batch_{batch}.npz', batch=range(N_BATCHES)),
+        # working_dir / 'covg_norm_dset1' / 'batch_0.npy',
+        # working_dir / 'models' / 'models_batch_0.pickle',
         expand(working_dir / 'latent_phenos.{dset}.tsv.gz', dset=datasets),
 
 rule get_chrom_lengths:
@@ -50,11 +52,13 @@ rule get_gene_bins:
         gtf = working_dir / 'collapsed.gtf',
         chrom = input_dir / 'chr_lengths.genome',
     output:
-        working_dir / 'gene_bins.bed.gz',
+        beds = expand(str(working_dir / 'gene_bins' / 'batch_{batch}.bed.gz'), batch=range(N_BATCHES)),
     params:
-        # n_bins = 10,
-        bin_width_coding = 8,
-        bin_width_noncoding = 16,
+        # n_bins = 16,
+        bin_width_coding = 16,
+        bin_width_noncoding = 128,
+        batch_size = 20,
+        outdir = working_dir / 'gene_bins',
     shell:
         """
         python ../scripts/get_gene_bins.py \
@@ -63,78 +67,92 @@ rule get_gene_bins:
             --binning-method bin-width \
             --bin-width-coding {params.bin_width_coding} \
             --bin-width-noncoding {params.bin_width_noncoding} \
-            --output {output}
+            --batch-size {params.batch_size} \
+            --outdir {params.outdir}
         """
 
-rule bedtools_coverage:
-    """Get RNA-Seq read coverage for feature bins"""
+rule get_bigwig:
+    """Convert BAM to bigWig for bp-level coverage"""
     input:
         bam = bam_dir / '{sample_id}.bam',
-        bed = working_dir / 'gene_bins.bed.gz',
+    output:
+        bw = working_dir / 'covg_bigwig' / '{sample_id}.bw',
+    params:
+        bigwig_dir = working_dir / 'covg_bigwig',
+    threads: 16,
+    shell:
+        """
+        mkdir -p {params.bigwig_dir}
+        bamCoverage -b {input.bam} -o {output.bw} -of bigwig --binSize 1 -p {threads}
+        """
+
+rule bin_coverage:
+    """Average RNA-Seq read coverage per feature bin, combine samples"""
+    input:
+        bw = lambda w: expand(str(working_dir / 'covg_bigwig' / '{sample_id}.bw'), sample_id=dataset_samples(w.dset)),
+        bed = working_dir / 'gene_bins'/ 'batch_{batch}.bed.gz',
         chrom = input_dir / 'chr_lengths.genome',
     output:
-        working_dir / 'covg_sample_{dset}' / '{sample_id}.txt',
+        working_dir / 'covg_binned_{dset}' / 'batch_{batch}.npz',
     params:
-        covg_sample_dir = input_dir / 'covg_sample',
+        covg_binned_dir = str(input_dir / 'covg_binned_{dset}'),
+        labels = lambda w: ' '.join(dataset_samples(w.dset)),
     shell:
-        # -split is necessary I think to avoid counting coverage between spliced exons
         """
-        mkdir -p {params.covg_sample_dir}
-        bedtools coverage -split -sorted -counts \
-            -a {input.bed} \
-            -b {input.bam} \
-            -g {input.chrom} \
-            | cut -f7 > {output}
+        mkdir -p {params.covg_binned_dir}
+        multiBigwigSummary BED-file \
+            --bwfiles {input.bw} \
+            --labels {params.labels} \
+            --BED {input.bed} \
+            -o {output}
         """
 
 rule prepare_coverage:
     """Assemble per-sample coverage count files, normalize, regress out explicit phenotypes, and bin into batches for PCA"""
     input:
-        # covg_sample = covg_sample_files,
-        covg_sample = lambda w: expand(str(working_dir / f'covg_sample_{w.dset}' / '{sample_id}.txt'), sample_id=dataset_samples(w.dset)),
-        bins = working_dir / 'gene_bins.bed.gz',
+        covg = working_dir / 'covg_binned_{dset}' / 'batch_{batch}.npz',
+        bins = working_dir / 'gene_bins' / 'batch_{batch}.bed.gz',
         phenos = expand('data_input/phenotypes/{modality}.bed.gz', modality=modalities),
         phenos_list = 'data_input/pheno_files.txt',
     output:
-        covg = expand(str(working_dir / 'covg_batch_{{dset}}' / 'covg_{batch}.npy'), batch=range(N_BATCHES)),
-        regions = expand(str(working_dir / 'covg_batch_{{dset}}' / 'covg_{batch}.regions.tsv.gz'), batch=range(N_BATCHES)),
+        covg = working_dir / 'covg_norm_{dset}' / 'batch_{batch}.npy',
+        bins = working_dir / 'covg_norm_{dset}' / 'batch_{batch}.bins.tsv.gz',
     params:
-        covg_batch_dir = str(working_dir / 'covg_batch_{dset}'),
-        covg_file_list = str(working_dir / 'covg_sample_files_{dset}.txt'),
-        batch_size = 20,
+        covg_binned_dir = str(working_dir / 'covg_binned_{dset}'),
+        bins_dir = working_dir / 'gene_bins',
+        covg_norm_dir = str(working_dir / 'covg_norm_{dset}'),
     resources:
         mem_mb = 32000,
     shell:
         """
-        mkdir -p {params.covg_batch_dir}
-        printf '%s\\n' {input.covg_sample} > {params.covg_file_list}
+        mkdir -p {params.covg_norm_dir}
         python ../latent_RNA.py prepare \
-            --inputs {params.covg_file_list} \
-            --regions {input.bins} \
+            --input-covg-dir {params.covg_binned_dir} \
+            --bins-dir {params.bins_dir} \
+            --batch {wildcards.batch} \
             --pheno-paths-file {input.phenos_list} \
-            --output-dir {params.covg_batch_dir} \
-            --batch-size {params.batch_size}
+            --output-dir {params.covg_norm_dir}
         """
 
 rule fit_models:
     """Fit models to latent features"""
     input:
-        covg_batch = expand(str(working_dir / 'covg_batch_{dset}' / 'covg_{{batch}}.npy'), dset=datasets),
-        regions = expand(str(working_dir / 'covg_batch_{dset}' / 'covg_{{batch}}.regions.tsv.gz'), dset=datasets),
+        covg_norm = expand(str(working_dir / 'covg_norm_{dset}' / 'batch_{{batch}}.npy'), dset=datasets),
+        bins = expand(str(working_dir / 'covg_norm_{dset}' / 'batch_{{batch}}.bins.tsv.gz'), dset=datasets),
     output:
-        models = working_dir / 'models' / 'models_{batch}.pickle',
+        models = working_dir / 'models' / 'models_batch_{batch}.pickle',
     params:
-        covg_batch_dirs = expand(str(working_dir / 'covg_batch_{dset}'), dset=datasets),
-        covg_batch_dirs_file = working_dir / 'covg_batch_dirs.txt',
+        covg_norm_dirs = expand(str(working_dir / 'covg_norm_{dset}'), dset=datasets),
+        covg_norm_dirs_file = working_dir / 'covg_norm_dirs.txt',
         models_dir = working_dir / 'models',
         var_expl_max = 0.80,
-        n_pcs_max = 32,
+        n_pcs_max = 16,
     shell:
         """
         mkdir -p {params.models_dir}
-        printf '%s\\n' {params.covg_batch_dirs} > {params.covg_batch_dirs_file}
+        printf '%s\\n' {params.covg_norm_dirs} > {params.covg_norm_dirs_file}
         python ../latent_RNA.py fit \
-            --dir-file {params.covg_batch_dirs_file} \
+            --norm-covg-dir-file {params.covg_norm_dirs_file} \
             --batch {wildcards.batch} \
             --models-dir {params.models_dir} \
             -v {params.var_expl_max} \
@@ -144,17 +162,19 @@ rule fit_models:
 rule get_latent_phenotypes:
     """Apply models to generate latent phenotypes"""
     input:
-        covg_batch = expand(str(working_dir / 'covg_batch_{{dset}}' / 'covg_{batch}.npy'), batch=range(N_BATCHES)),
-        models = expand(str(working_dir / 'models' / 'models_{batch}.pickle'), batch=range(N_BATCHES)),
+        covg_norm = expand(str(working_dir / 'covg_norm_{{dset}}' / 'batch_{batch}.npy'), batch=range(N_BATCHES)),
+        models = expand(str(working_dir / 'models' / 'models_batch_{batch}.pickle'), batch=range(N_BATCHES)),
     output:
         phenos = working_dir / 'latent_phenos.{dset}.tsv.gz',
     params:
-        covg_batch_dir = str(working_dir / 'covg_batch_{dset}'),
+        covg_norm_dir = str(working_dir / 'covg_norm_{dset}'),
         models_dir = working_dir / 'models',
+        n_batches = N_BATCHES,
     shell:
         """
         python ../latent_RNA.py transform \
-            --batch-covg-dir {params.covg_batch_dir} \
+            --norm-covg-dir {params.covg_norm_dir} \
             --models-dir {params.models_dir} \
+            --n-batches {params.n_batches} \
             --output {output}
         """

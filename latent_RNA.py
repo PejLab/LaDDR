@@ -16,26 +16,26 @@ import statsmodels.api as sm
 from tqdm import tqdm
 
 class CoverageData:
-    def __init__(self, batch_covg_dirs: list, batch_id: int):
+    def __init__(self, norm_covg_dirs: list, batch_id: int):
         self.samples = []
-        for d in batch_covg_dirs:
+        for d in norm_covg_dirs:
             with open(d / 'samples.txt') as f:
                 self.samples.extend([l.strip() for l in f])
-        if len(batch_covg_dirs) > 1:
+        if len(norm_covg_dirs) > 1:
             # Make sample IDs unique for concatenation, and ID won't be saved in the models anyway.
             self.samples = [f'S{i + 1}' for i in range(len(self.samples))]
-        self.coverage, self.regions = self.load_coverage(batch_covg_dirs, batch_id)
-        self.genes = list(self.regions.groupby('gene_id').groups.keys())
+        self.coverage, self.bins = self.load_coverage(norm_covg_dirs, batch_id)
+        self.genes = list(self.bins.groupby('gene_id').groups.keys())
 
-    def load_coverage(self, batch_covg_dirs: list, batch_id: int) -> tuple:
-        mats = [np.load(d / f'covg_{batch_id}.npy') for d in batch_covg_dirs]
+    def load_coverage(self, norm_covg_dirs: list, batch_id: int) -> tuple:
+        mats = [np.load(d / f'batch_{batch_id}.npy') for d in norm_covg_dirs]
         mat = np.concatenate(mats, axis=1)
-        region_file = batch_covg_dirs[0] / f'covg_{batch_id}.regions.tsv.gz'
-        regions = pd.read_csv(region_file, sep='\t', index_col=[0, 1])
-        assert mat.shape[0] == regions.shape[0]
+        bin_file = norm_covg_dirs[0] / f'batch_{batch_id}.bins.tsv.gz'
+        bins = pd.read_csv(bin_file, sep='\t', index_col=[0, 1])
+        assert mat.shape[0] == bins.shape[0]
         assert mat.shape[1] == len(self.samples)
-        df = pd.DataFrame(mat, index=regions.index, columns=self.samples)
-        return df, regions
+        df = pd.DataFrame(mat, index=bins.index, columns=self.samples)
+        return df, bins
 
     def by_gene(self) -> Iterator[tuple]:
         for gene_id, df in self.coverage.groupby('gene_id'):
@@ -129,49 +129,40 @@ class Model:
         out.set_index(['gene_id', 'PC'], inplace=True)
         return out
 
-def load_regions(regionfile: Path) -> pd.DataFrame:
-    regions = pd.read_csv(regionfile, sep='\t', header=None, usecols=[3], names=['region'], index_col='region')
-    regions.index = regions.index.str.split('_', n=2, expand=True)
-    regions.index.set_names(['gene_id', 'start', 'end'], inplace=True)
-    regions = regions.reset_index()
-    regions['start'] = regions['start'].astype(int)
-    regions['end'] = regions['end'].astype(int)
-    regions['length'] = regions['end'] - regions['start']
-    regions['pos'] = regions['start'] + regions['length'] // 2
-    regions = regions.set_index(['gene_id', 'pos'])
-    regions = regions.drop(['start', 'end'], axis=1)
-    return regions
+def load_bins(binfile: Path) -> pd.DataFrame:
+    bins = pd.read_csv(binfile, sep='\t', header=None, usecols=[3], names=['bin'], index_col='bin')
+    bins.index = bins.index.str.split('_', n=2, expand=True)
+    bins.index.set_names(['gene_id', 'start', 'end'], inplace=True)
+    bins = bins.reset_index()
+    bins['start'] = bins['start'].astype(int)
+    bins['end'] = bins['end'].astype(int)
+    bins['length'] = bins['end'] - bins['start']
+    bins['pos'] = bins['start'] + bins['length'] // 2
+    bins = bins.set_index(['gene_id', 'pos'])
+    bins = bins.drop(['start', 'end'], axis=1)
+    return bins
 
-def load_sample_covg_np(infiles: list, nrow: int) -> np.ndarray:
-    """Load per-sample coverage files and concatenate columns into one numpy array"""
-    counts = np.zeros((nrow, len(infiles)), dtype=np.int32)
-    for i, fname in tqdm(enumerate(infiles), total=len(infiles), desc="Loading per-sample coverage files"):
-        d = pd.read_csv(fname, header=None, dtype=np.int32, names=['count'], index_col=False)
-        assert d.shape[0] == nrow
-        counts[:, i] = d['count']
-    return counts
+def normalize_coverage(df: pd.DataFrame, bins: pd.DataFrame) -> pd.DataFrame:
+    """Normalize coverage for each gene in one batch.
 
-def load_sample_covg(infile: Path, regions: pd.DataFrame) -> pd.DataFrame:
-    """Load per-sample coverage files into one dataframe"""
-    infiles = pd.read_csv(infile, header=None, names=['path'])
-    infiles['sample'] = [Path(p).name.split('.')[0] for p in infiles['path']]
-    assert infiles['sample'].is_unique
-    counts = load_sample_covg_np(infiles['path'], nrow=regions.shape[0])
-    counts = pd.DataFrame(counts, index=regions.index, columns=infiles['sample'])
-    # Sort by gene and position along gene instead of genomic coordinate
-    counts = counts.sort_index()
-    return counts
+    Args:
+        df: The input DataFrame containing mean coverage per bin per sample.
+        bins: The input DataFrame containing bin information.
 
-def normalize_coverage(df: pd.DataFrame, regions: pd.DataFrame) -> pd.DataFrame:
-    """Normalize coverage for each gene in one batch"""
-    # For log-transform, add pseudocount of 1 per bp:
-    df = df.add(regions['length'].loc[df.index], axis=0)
-    # Normalize coverage to ignore total expression, i.e. total coverage per sample per gene sums to 1:
-    df = df.groupby('gene_id', group_keys=False).apply(lambda x: x.div(x.sum(axis=0), axis=1))
+    Returns:
+        The normalized coverage DataFrame.
+
+    Raises:
+        AssertionError: If the input DataFrame contains any NaN values.
+    """
+    # For log-transform, add pseudocount of 1 per bp
+    df += 1
+    # Compute total coverage across the gene per sample for normalization
+    total_coverage = df.mul(bins['length'].loc[df.index], axis=0).sum(axis=0)
+    # Get mean fraction of gene's coverage per bp for each bin
+    df = df.div(total_coverage, axis=1)
     assert not df.isna().any().any()
-    # Normalize to mean read fraction per bp within each region:
-    df = df.div(regions['length'].loc[df.index], axis=0)
-    # Variance stabilization:
+    # Variance stabilization
     df = np.log2(df)
     return df
 
@@ -180,6 +171,16 @@ def load_phenotypes(pheno_file: Path, samples: list) -> pd.DataFrame:
     
     Gene IDs are parsed from the 4th column from the start up to the first
     non-alphanumeric character. Chromosome, start, and end columns are ignored.
+
+    Args:
+        pheno_file: Path to the phenotype table file in BED format.
+        samples: List of sample IDs.
+
+    Returns:
+        The phenotype table DataFrame.
+    
+    Raises:
+        AssertionError: If the phenotype table is missing any samples
     """
     df = pd.read_csv(pheno_file, sep='\t', index_col=3, dtype={0: str, 1: str, 2: str})
     df = df.drop(df.columns[:3], axis=1)
@@ -210,47 +211,45 @@ def regress_out_phenos(df: pd.DataFrame, phenos: pd.core.groupby.DataFrameGroupB
         df = df.apply(regress_out_phenos_single, axis=1, args=(x, gene_id)) # axis=1 means by row, i.e. index of Series is column names
     return df
 
-def prepare(infile: Path, regionfile: Path, pheno_files: list, batch_size: int, outdir: Path):
+def prepare(input_covg_dir: Path, bins_dir: Path, batches: list, pheno_files: list, outdir: Path):
     """Assemble per-sample coverage, split into batches, and save to numpy binary files"""
-    regions = load_regions(regionfile)
-    counts = load_sample_covg(infile, regions)
-    samples = counts.columns
-    genes = regions.index.get_level_values('gene_id').unique().sort_values()
+    for batch in batches:
+        print(f'=== Preparing coverage for batch {batch} ===', flush=True)
+        infile = input_covg_dir / f'batch_{batch}.npz'
+        binfile = bins_dir / f'batch_{batch}.bed.gz'
+        covg = np.load(infile)
+        bins = load_bins(binfile)
+        assert covg['matrix'].shape[0] == bins.shape[0]
+        samples = list(covg['labels'])
+        assert pd.Series(samples).is_unique
+        covg = pd.DataFrame(covg['matrix'], index=bins.index, columns=samples)
+        # Sort by gene and position along gene instead of genomic coordinate
+        covg = covg.sort_index()
 
-    n_batches = math.ceil(len(genes) / batch_size)
-    gene_batch = {}
-    for i, gene_id in enumerate(genes):
-        gene_batch[gene_id] = i // batch_size
-    regions['batch'] = [gene_batch[gene_id] for gene_id in regions.index.get_level_values('gene_id')]
-
-    outdir.mkdir(exist_ok=True)
-    with open(outdir / 'samples.txt', 'w') as f:
-        f.write('\n'.join(samples) + '\n')
-    with open(outdir / 'genes.txt', 'w') as f:
-        f.write('\n'.join(genes) + '\n')
-    with open(outdir / 'batches.txt', 'w') as f:
-        f.write('\n'.join([str(i) for i in range(n_batches)]) + '\n')
-    batches = counts.groupby(regions['batch'])
-    regions = regions.drop('batch', axis=1)
-    if len(pheno_files) > 0:
-        print(f'Loading phenotypes from {len(pheno_files)} file{"" if len(pheno_files) == 1 else "s"} to regress out...', flush=True)
-        phenos = [load_phenotypes(f, samples).reset_index() for f in pheno_files]
-        phenos = pd.concat(phenos, axis=0)
-        # Parse gene IDs from phenotype IDs:
-        pheno_genes = phenos['phenotype_id'].str.extract(r'([a-zA-Z0-9]+)')[0]
-        phenos = phenos.drop('phenotype_id', axis=1)
-        phenos = phenos.groupby(pheno_genes)
-    for batch_id, x in tqdm(batches, total=n_batches, desc="Processing and saving per-batch coverage files"):
-        x = normalize_coverage(x, regions)
+        outdir.mkdir(exist_ok=True)
+        if len(pheno_files) > 0:
+            print(f'Loading phenotypes from {len(pheno_files)} file{"" if len(pheno_files) == 1 else "s"} to regress out...', flush=True)
+            phenos = [load_phenotypes(f, samples).reset_index() for f in pheno_files]
+            phenos = pd.concat(phenos, axis=0)
+            # Parse gene IDs from phenotype IDs:
+            pheno_genes = phenos['phenotype_id'].str.extract(r'([a-zA-Z0-9]+)')[0]
+            phenos = phenos.drop('phenotype_id', axis=1)
+            phenos = phenos.groupby(pheno_genes)
+        covg = normalize_coverage(covg, bins)
         if len(pheno_files) > 0:
             # Regress out phenotypes:
-            prev_index = x.index.copy()
-            x = x.groupby('gene_id', group_keys=False).apply(lambda c: regress_out_phenos(c, phenos, c.name))
-            assert x.index.equals(prev_index)
-        mat = x.to_numpy()
-        np.save(outdir / f'covg_{batch_id}.npy', mat)
-        reg = regions.loc[x.index, :]
-        reg.to_csv(outdir / f'covg_{batch_id}.regions.tsv.gz', sep='\t')
+            prev_index = covg.index.copy()
+            covg = covg.groupby('gene_id', group_keys=False).apply(lambda c: regress_out_phenos(c, phenos, c.name))
+            assert covg.index.equals(prev_index)
+        mat = covg.to_numpy()
+        np.save(outdir / f'batch_{batch}.npy', mat)
+        b = bins.loc[covg.index, :]
+        b.to_csv(outdir / f'batch_{batch}.bins.tsv.gz', sep='\t')
+        # If samples.txt doesn't exist, write it:
+        if not (outdir / 'samples.txt').exists():
+            with open(outdir / 'samples.txt', 'w') as f:
+                f.write('\n'.join(samples) + '\n')
+        print(f'Coverage saved in {outdir}', flush=True)
 
 def subset_pcs_fpca(fpca: FPCA, var_expl: float, fpca_basis: str):
     """Subset the FPCA model using variance explained cutoff"""
@@ -278,9 +277,9 @@ def subset_pcs_pca(pca: PCA, n_pcs_max: int):
         pca.singular_values_ = pca.singular_values_[:n_pcs_max]
         pca.noise_variance_ = None # Could compute if necessary, but omitting otherwise
 
-def fit_batch(batch_covg_dirs: list, batch: int, var_expl_max: float, n_pcs_max: int, fpca: bool = True, fpca_x_values: str = 'bin', fpca_basis: str = 'discrete') -> dict:
+def fit_batch(norm_covg_dirs: list, batch: int, var_expl_max: float, n_pcs_max: int, fpca: bool = True, fpca_x_values: str = 'bin', fpca_basis: str = 'discrete') -> dict:
     """Fit functional PCA models for all genes in a batch"""
-    covg = CoverageData(batch_covg_dirs, batch)
+    covg = CoverageData(norm_covg_dirs, batch)
     models = {'var_expl_max': var_expl_max, 'n_pcs_max': n_pcs_max, 'models': {}}
     for gene_id, x in tqdm(covg.by_gene(), total=len(covg.genes), desc="Fitting models"):
         model = Model(fpca, fpca_x_values, fpca_basis)
@@ -289,41 +288,34 @@ def fit_batch(batch_covg_dirs: list, batch: int, var_expl_max: float, n_pcs_max:
             models['models'][gene_id] = model
     return models
 
-def fit(batch_covg_dirs: list, batch_id: int, var_expl_max: float, n_pcs_max: int, output_dir: Path, fpca: bool = True, fpca_x_values: str = 'bin', fpca_basis: str = 'discrete'):
+def fit(norm_covg_dirs: list, batches: list, var_expl_max: float, n_pcs_max: int, output_dir: Path, fpca: bool = True, fpca_x_values: str = 'bin', fpca_basis: str = 'discrete'):
     """Fit functional PCA models for all genes in one or more batches"""
-    if batch_id is None:
-        with open(batch_covg_dirs[0] / 'batches.txt') as f:
-            batches = [int(l.strip()) for l in f]
-    else:
-        batches = [batch_id]
     output_dir.mkdir(exist_ok=True)
     for batch in batches:
         print(f'=== Fitting models for batch {batch} ===', flush=True)
-        models = fit_batch(batch_covg_dirs, batch, var_expl_max, n_pcs_max, fpca, fpca_x_values, fpca_basis)
-        outfile = output_dir / f'models_{batch}.pickle'
+        models = fit_batch(norm_covg_dirs, batch, var_expl_max, n_pcs_max, fpca, fpca_x_values, fpca_basis)
+        outfile = output_dir / f'models_batch_{batch}.pickle'
         with open(outfile, 'wb') as f:
             pickle.dump(models, f)
         print(f'Models saved to {outfile}', flush=True)
 
-def transform_batch(batch_covg_dir: Path, batch: int, models_dir: dict) -> Iterator[pd.DataFrame]:
+def transform_batch(norm_covg_dir: Path, batch: int, models_dir: dict) -> Iterator[pd.DataFrame]:
     """Apply functional PCA transformation to all genes in a batch"""
-    covg = CoverageData([batch_covg_dir], batch)
+    covg = CoverageData([norm_covg_dir], batch)
     print('  Loading models...', flush=True)
-    models_file = models_dir / f'models_{batch}.pickle'
+    models_file = models_dir / f'models_batch_{batch}.pickle'
     with open(models_file, 'rb') as f:
         models = pickle.load(f)
     for gene_id, x in tqdm(covg.by_gene(), total=len(covg.genes), desc="  Generating phenotypes per gene"):
         if gene_id in models['models']:
             yield models['models'][gene_id].transform(x)
 
-def transform(batch_covg_dir: Path, models_dir: dict) -> pd.DataFrame:
+def transform(norm_covg_dir: Path, models_dir: dict, n_batches: int) -> pd.DataFrame:
     """Apply functional PCA transformation to all genes"""
-    with open(batch_covg_dir / 'batches.txt') as f:
-        batches = [int(l.strip()) for l in f]
     out = []
-    for batch in batches:
+    for batch in range(n_batches):
         print(f'Transforming batch {batch}', flush=True)
-        out.extend(transform_batch(batch_covg_dir, batch, models_dir))
+        out.extend(transform_batch(norm_covg_dir, batch, models_dir))
     out = pd.concat(out)
     out = out.reset_index()
     return out
@@ -333,21 +325,25 @@ def create_parser():
     subparsers = parser.add_subparsers(title='subcommands', dest='subcommand', required=True, help='Choose a subcommand')
 
     # Subparser for 'prepare'
-    parser_prepare = subparsers.add_parser('prepare', help='Prepare batched input coverage files. Coverage counts will be assembled and saved in batches, `fit` will be run on each batch separately, and `transform` will run all batches and produce the combined output.')
-    parser_prepare.add_argument('-i', '--inputs', type=Path, metavar='FILE', required=True, help='File containing paths to all per-sample coverage files. Each one has one integer per line corresponding to rows of `regions`.')
-    parser_prepare.add_argument('-r', '--regions', type=Path, metavar='FILE', required=True, help='BED file containing regions to use for model input data. Must have start, end and region ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of input coverage files.')
+    parser_prepare = subparsers.add_parser('prepare', help='Prepare RNA-seq coverage for a batch of genes')
+    parser_prepare.add_argument('-i', '--input-covg-dir', type=Path, metavar='DIR', required=True, help='Directory of per-batch numpy archive files (.npz) containing mean coverage per bin for all samples.')
+    parser_prepare.add_argument('--bins-dir', type=Path, metavar='DIR', required=True, help='Directory of per-batch BED files containing bin regions. Must have start, end and bin ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of corresponding input coverage file.')
+    parser_prepare_batch = parser_prepare.add_mutually_exclusive_group(required=True)
+    parser_prepare_batch.add_argument('-b', '--batch', type=int, metavar='N', help='Batch ID to process. Batch IDs are integers starting from 0.')
+    parser_prepare_batch.add_argument('--n-batches', type=int, metavar='N', help='To load and fit all batches in sequence, provide number of batches instead of a specific batch.')
     parser_prepare_phenos = parser_prepare.add_mutually_exclusive_group(required=False)
     parser_prepare_phenos.add_argument('-p', '--pheno-paths', nargs='+', type=Path, metavar='FILE', help='One or more paths to phenotype tables to regress out of the coverage data per gene prior to model input. Files should be in bed format, i.e. input format for tensorqtl. Gene IDs are parsed from the 4th column from the start up to the first non-alphanumeric character.')
     parser_prepare_phenos.add_argument('--pheno-paths-file', type=Path, metavar='FILE', help='File containing list of paths to phenotype tables.')
-    parser_prepare.add_argument('-d', '--output-dir', type=Path, metavar='DIR', required=True, help='Directory where per-batch numpy binary files will be written.')
-    parser_prepare.add_argument('--batch-size', type=int, default=200, metavar='N', help='Number of genes (at most) per batch. (default: %(default)s)')
+    parser_prepare.add_argument('-o', '--output-dir', type=Path, metavar='DIR', required=True, help='Directory where per-batch numpy binary files with normalized coverage will be written.')
 
     # Subparser for 'fit'
     parser_fit = subparsers.add_parser('fit', help='Fit FPCA or PCA models to coverage data')
     parser_fit_input = parser_fit.add_mutually_exclusive_group(required=True)
-    parser_fit_input.add_argument('-d', '--batch-covg-dir', nargs='+', type=Path, metavar='DIR', help='Directory of per-batch numpy binary files. Specify multiple directories to load data from all of them and fit models using the combined dataset. All datasets must have been generated using the same gene bins file.')
-    parser_fit_input.add_argument('--dir-file', type=Path, metavar='FILE', help='File containing list of directories of per-batch numpy binary files. Use this instead of -d/--gene-covg-dir in case of many directories.')
-    parser_fit.add_argument('-b', '--batch', type=int, metavar='N', help='Batch number to load and fit. Batch numbers start from 0. If omitted, all batches will be loaded and fit in sequence.')
+    parser_fit_input.add_argument('-d', '--norm-covg-dir', nargs='+', type=Path, metavar='DIR', help='Directory of per-batch numpy binary files with normalized coverage. Specify multiple directories to load data from all of them and fit models using the combined dataset. All datasets must have been generated using the same per-batch gene bins files.')
+    parser_fit_input.add_argument('--norm-covg-dir-file', type=Path, metavar='FILE', help='File containing list of directories of per-batch numpy binary files. Use this instead of -d/--norm-covg-dir in case of many directories.')
+    parser_fit_batch = parser_fit.add_mutually_exclusive_group(required=True)
+    parser_fit_batch.add_argument('-b', '--batch', type=int, metavar='N', help='Batch ID to load and fit. Batch IDs are integers starting from 0.')
+    parser_fit_batch.add_argument('--n-batches', type=int, metavar='N', help='To load and fit all batches in sequence, provide number of batches instead of a specific batch.')
     parser_fit.add_argument('-m', '--models-dir', type=Path, metavar='DIR', required=True, help='Directory in which to save model pickle files.')
     parser_fit.add_argument('-v', '--var-expl-max', type=float, default=0.8, metavar='FLOAT', help='Max variance explained by the PCs kept per gene. Pass 0 or 1 for no variance explained cutoff.  (default: %(default)s)')
     parser_fit.add_argument('-n', '--n-pcs-max', type=int, default=16, metavar='N', help='Max number of PCs to keep per gene. Pass 0 for no cutoff. (default: %(default)s)')
@@ -357,8 +353,9 @@ def create_parser():
 
     # Subparser for 'transform'
     parser_transform = subparsers.add_parser('transform', help='Apply fitted models to coverage data')
-    parser_transform.add_argument('-d', '--batch-covg-dir', type=Path, metavar='DIR', required=True, help='Directory of per-batch numpy binary files.')
+    parser_transform.add_argument('-d', '--norm-covg-dir', type=Path, metavar='DIR', required=True, help='Directory of per-batch numpy binary files with normalized coverage.')
     parser_transform.add_argument('-m', '--models-dir', type=Path, metavar='DIR', required=True, help='Directory of saved models (*.pickle) to load and use for transformation.')
+    parser_transform.add_argument('--n-batches', type=int, metavar='N', required=True, help='Number of batches in the data. Latent phenotypes from all batches will be computed and concatenated.')
     parser_transform.add_argument('-o', '--output', type=Path, metavar='FILE', required=True, help='Output file (TSV).')
 
     return parser
@@ -374,18 +371,18 @@ if __name__ == '__main__':
                 pheno_paths = [Path(l.strip()) for l in f]
         else:
             pheno_paths = []
-        print('=== Preparing batched coverage files ===', flush=True)
-        prepare(args.inputs, args.regions, pheno_paths, args.batch_size, args.output_dir)
-        print(f'Coverage files saved in {args.output_dir}', flush=True)
+        batches = [args.batch] if args.batch is not None else list(range(args.n_batches))
+        prepare(args.input_covg_dir, args.bins_dir, batches, pheno_paths, args.output_dir)
     elif args.subcommand == 'fit':
-        if args.batch_covg_dir is not None:
-            batch_covg_dirs = args.batch_covg_dir
+        if args.norm_covg_dir is not None:
+            norm_covg_dirs = args.norm_covg_dir
         else:
-            with open(args.dir_file) as f:
-                batch_covg_dirs = [Path(l.strip()) for l in f]
-        fit(batch_covg_dirs, args.batch, args.var_expl_max, args.n_pcs_max, args.models_dir, not args.regular_pca, args.fpca_x_values, args.fpca_basis)
+            with open(args.norm_covg_dir_file) as f:
+                norm_covg_dirs = [Path(l.strip()) for l in f]
+        batches = [args.batch] if args.batch is not None else list(range(args.n_batches))
+        fit(norm_covg_dirs, batches, args.var_expl_max, args.n_pcs_max, args.models_dir, not args.regular_pca, args.fpca_x_values, args.fpca_basis)
     elif args.subcommand == 'transform':
         print('=== Generating latent phenotypes ===', flush=True)
-        output = transform(args.batch_covg_dir, args.models_dir)
+        output = transform(args.norm_covg_dir, args.models_dir, args.n_batches)
         output.to_csv(args.output, sep='\t', index=False, float_format='%g')
         print(f'Latent phenotypes saved to {args.output}', flush=True)

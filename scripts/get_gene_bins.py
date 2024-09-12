@@ -6,6 +6,7 @@ computing latent features.
 
 import argparse
 from collections import defaultdict
+import math
 from pathlib import Path
 from typing import Iterator
 from bx.intervals.intersection import IntervalTree
@@ -148,13 +149,35 @@ def name_bins_with_gene_coords(bins: pd.DataFrame) -> pd.DataFrame:
     bins['name'] = bins['gene_id'] + '_' + starts.astype(str) + '_' + ends.astype(str)
     return bins
 
+def load_chromosomes(chrom_file: Path) -> list:
+    # Use chromosome lengths file to correctly sort BED file
+    chrom = pd.read_csv(
+        chrom_file,
+        sep='\t',
+        header=None,
+        names=['chrom', 'length'],
+        dtype={'chrom': str, 'length': int}
+    )
+    return list(chrom['chrom'])
+
+def save_bed(bins: pd.DataFrame, chromosomes: Path, outfile: Path):
+    # Prepare BED format:
+    bins['start'] = bins['start'] - 1
+    bins['gene_id2'] = bins['gene_id']
+    bins = bins.groupby('gene_id2').apply(name_bins_with_gene_coords, include_groups=False)
+    bins = bins[['seqname', 'start', 'end', 'name', 'feature', 'strand']]
+    bins['seqname'] = pd.Categorical(bins['seqname'], categories=chromosomes, ordered=True)
+    bins = bins.sort_values(by=['seqname', 'start'])
+    bins.to_csv(outfile, sep='\t', index=False, header=False)
+
 parser = argparse.ArgumentParser(description='Get gene feature bins from GTF file')
 parser.add_argument('-g', '--gtf', type=Path, required=True, metavar='FILE', help='Transcript annotation in GTF format. Must be the collapsed annotation produced by `collapse_annotation.py`.')
 parser.add_argument('-c', '--chromosomes', type=Path, required=True, metavar='FILE', help='Chromosome lengths file, e.g. chrNameLength.txt from STAR index, to sort chromosomes.')
-parser.add_argument('-o', '--output', type=Path, required=True, metavar='FILE', help='Output file (BED).')
+parser.add_argument('--outdir', type=Path, required=True, metavar='PATH', help='Directory in which to save per-batch BED files.')
 parser.add_argument('--binning-method', choices=['bin-width', 'n-bins'], default='n-bins', help='Whether to split all coding/noncoding regions into fixed-width bins, or split each region into a fixed number of bins. (default: %(default)s)')
 parser.add_argument('--bin-width-coding', type=int, default=16, metavar='N', help='For method "bin-width", width of bins for coding (exonic) regions of the genes. (default: %(default)s)')
 parser.add_argument('--bin-width-noncoding', type=int, default=128, metavar='N', help='For method "bin-width", width of bins for noncoding (non-exonic) regions of the genes. (default: %(default)s)')
+parser.add_argument('--batch-size', type=int, default=200, metavar='N', help='Number of genes (at most) per batch. (default: %(default)s)')
 parser.add_argument('--n-bins', type=int, default=24, metavar='N', help='For method "n-bins", number of bins to split each feature (exon, intron, etc.) into. (default: %(default)s)')
 args = parser.parse_args()
 
@@ -177,39 +200,36 @@ anno = anno.loc[anno['gene_type'] == 'protein_coding', :]
 anno = anno[['gene_id', 'seqname', 'start', 'end', 'strand', 'feature']]
 anno = anno.sort_values(by=['gene_id', 'start'])
 
-# For each gene, add introns, upstream, and downstream regions:
-anno = anno.groupby('gene_id').apply(add_noncoding_regions, include_groups=False)
-anno = anno.reset_index(level='gene_id')
-anno = anno.sort_values(by=['gene_id', 'start'])
-if args.binning_method == 'bin-width':
-    bins = split_regions_bin_width(anno, args.bin_width_coding, args.bin_width_noncoding)
-else:
-    bins = split_regions_n_bins(anno, args.n_bins)
-bins = remove_bins_overlapping_exon(bins, exons)
+chromosomes = load_chromosomes(args.chromosomes)
 
-# Remove any genes with no exon regions remaining:
-n_genes_before = bins['gene_id'].nunique()
-bins = bins.groupby('gene_id').filter(lambda x: 'exon' in x['feature'].values)
-n_genes_after = bins['gene_id'].nunique()
-if n_genes_before != n_genes_after:
-    print(f'Removed {n_genes_before - n_genes_after} genes with no unique exonic regions')
+# Split genes into batches
+genes = anno['gene_id'].sort_values().unique()
+n_batches = math.ceil(len(genes) / args.batch_size)
+gene_batch = {}
+for i, gene_id in enumerate(genes):
+    gene_batch[gene_id] = i // args.batch_size
+anno['batch'] = [gene_batch[gene_id] for gene_id in anno['gene_id']]
 
-# Prepare BED format:
-bins['start'] = bins['start'] - 1
-bins['gene_id2'] = bins['gene_id']
-bins = bins.groupby('gene_id2').apply(name_bins_with_gene_coords, include_groups=False)
-bins = bins[['seqname', 'start', 'end', 'name', 'feature', 'strand']]
+args.outdir.mkdir(exist_ok=True)
+genes_removed = 0
+for batch_id, batch_anno in anno.groupby('batch'):
+    # For each gene, add introns, upstream, and downstream regions:
+    batch_anno = batch_anno.groupby('gene_id').apply(add_noncoding_regions, include_groups=False)
+    batch_anno = batch_anno.reset_index(level='gene_id')
+    batch_anno = batch_anno.sort_values(by=['gene_id', 'start'])
+    if args.binning_method == 'bin-width':
+        batch_bins = split_regions_bin_width(batch_anno, args.bin_width_coding, args.bin_width_noncoding)
+    else:
+        batch_bins = split_regions_n_bins(batch_anno, args.n_bins)
+    batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
 
-# Sort bins using chromosome order from the chromosome lengths file:
-chrom = pd.read_csv(
-    args.chromosomes,
-    sep='\t',
-    header=None,
-    names=['chrom', 'length'],
-    dtype={'chrom': str, 'length': int}
-)
-chrom = list(chrom['chrom'])
-bins['seqname'] = pd.Categorical(bins['seqname'], categories=chrom, ordered=True)
-bins = bins.sort_values(by=['seqname', 'start'])
+    # Remove any genes with no exon regions remaining:
+    n_genes_before = batch_bins['gene_id'].nunique()
+    batch_bins = batch_bins.groupby('gene_id').filter(lambda x: 'exon' in x['feature'].values)
+    genes_removed = n_genes_before - batch_bins['gene_id'].nunique()
+    if genes_removed > 0:
+        print(f'Removed {genes_removed} genes with no unique exonic regions')
 
-bins.to_csv(args.output, sep='\t', index=False, header=False)
+    outfile = args.outdir / f'batch_{batch_id}.bed.gz'
+    save_bed(batch_bins, chromosomes, outfile)
+    print(f'Saved batch {batch_id} to {outfile}')
