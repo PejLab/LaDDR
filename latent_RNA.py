@@ -7,6 +7,7 @@ import pickle
 from typing import Iterator
 import numpy as np
 import pandas as pd
+import pyBigWig
 from skfda.preprocessing.dim_reduction import FPCA
 from skfda.representation.basis import BSplineBasis
 from skfda.representation.grid import FDataGrid
@@ -180,27 +181,65 @@ class Model:
 def load_bins(binfile: Path) -> pd.DataFrame:
     """Load bin information from a BED file
 
+    The genomic coordinates will be used to extract mean coverage per bin from
+    bigWig files. The gene-relative positions encoded in the bin IDs will be
+    used for normalization and modeling.
+
     Args:
-        binfile: Path to the BED file containing bin information. Only the
-          4th column (bin ID) is used. It is parsed into gene ID, start, and end
-          separated by underscores. Rows must correspond to rows of the input
-          coverage file.
+        binfile: Path to the BED file containing bin information. The 4th column
+          (bin ID) will be parsed, and must contain gene ID, start (relative to
+          gene start), and end separated by underscores.
 
     Returns:
-        The DataFrame containing bin information. Rows are bins and columns are
-        gene_id, pos (of bin center), and length.
+        The DataFrame containing bin information. Rows are bins and are indexed
+        by gene_id and pos (of bin center, relative to gene start), and columns
+        are chrom, chrom_start, and chrom_end.
     """
-    bins = pd.read_csv(binfile, sep='\t', header=None, usecols=[3], names=['bin'], index_col='bin')
-    bins.index = bins.index.str.split('_', n=2, expand=True)
+    bins = pd.read_csv(
+        binfile,
+        sep="\t",
+        header=None,
+        usecols=[0, 1, 2, 3],
+        names=["chrom", "chrom_start", "chrom_end", "bin"],
+        index_col="bin",
+    )
+    bins.index = bins.index.str.split("_", n=2, expand=True)
     bins.index.set_names(['gene_id', 'start', 'end'], inplace=True)
     bins = bins.reset_index()
+    bins['chrom'] = bins['chrom'].astype(str)
     bins['start'] = bins['start'].astype(int)
     bins['end'] = bins['end'].astype(int)
     bins['length'] = bins['end'] - bins['start']
     bins['pos'] = bins['start'] + bins['length'] // 2
     bins = bins.set_index(['gene_id', 'pos'])
-    bins = bins.drop(['start', 'end'], axis=1)
+    bins = bins[['chrom', 'chrom_start', 'chrom_end']]
     return bins
+
+def covg_from_bigwigs(bigwig_paths_file: Path, bins: pd.DataFrame) -> pd.DataFrame:
+    """Load coverage data from bigWig files
+    
+    Args:
+        bigwig_paths_file: Path to a file containing paths to bigWig files.
+          Sample IDs will be extracted from the basenames of the files.
+        bins: DataFrame containing bin information. Rows are bins and columns
+          are gene_id and pos.
+
+    Returns:
+        The coverage DataFrame. Rows are bins and columns are sample IDs.
+    """
+    with open(bigwig_paths_file) as f:
+        bigwig_paths = [Path(l.strip()) for l in f]
+    covg = np.zeros((bins.shape[0], len(bigwig_paths)))
+    for i, bw in enumerate(bigwig_paths):
+        with pyBigWig.open(str(bw)) as f:
+            for j, (gene_id, pos) in enumerate(bins.index):
+                chrom = bins.loc[(gene_id, pos), 'chrom']
+                start = bins.loc[(gene_id, pos), 'chrom_start']
+                end = bins.loc[(gene_id, pos), 'chrom_end']
+                covg[j, i] = f.stats(chrom, start, end, type='mean', exact=True)[0]
+    samples = [bw.stem for bw in bigwig_paths]
+    df = pd.DataFrame(covg, index=bins.index, columns=samples)
+    return df
 
 def normalize_coverage(df: pd.DataFrame, bins: pd.DataFrame) -> pd.DataFrame:
     """Normalize coverage for each gene in one batch.
@@ -219,7 +258,8 @@ def normalize_coverage(df: pd.DataFrame, bins: pd.DataFrame) -> pd.DataFrame:
     # For log-transform, add pseudocount of 1 per bp
     df += 1
     # Compute total coverage across the gene per sample for normalization
-    total_coverage = df.mul(bins['length'].loc[df.index], axis=0).sum(axis=0)
+    lengths = bins['chrom_end'] - bins['chrom_start']
+    total_coverage = df.mul(lengths.loc[df.index], axis=0).sum(axis=0)
     # Get mean fraction of gene's coverage per bp for each bin
     df = df.div(total_coverage, axis=1)
     assert not df.isna().any().any()
@@ -273,20 +313,16 @@ def regress_out_phenos(df: pd.DataFrame, phenos: pd.core.groupby.DataFrameGroupB
         df = df.apply(regress_out_phenos_single, axis=1, args=(x, gene_id)) # axis=1 means by row, i.e. index of Series is column names
     return df
 
-def prepare(input_covg_dir: Path, bins_dir: Path, batches: list, pheno_files: list, outdir: Path):
+def prepare(bigwig_paths_file: Path, bins_dir: Path, batches: list, pheno_files: list, outdir: Path):
     """Assemble per-sample coverage, split into batches, and save to numpy binary files"""
     for batch in batches:
         print(f'=== Preparing coverage for batch {batch} ===', flush=True)
-        infile = input_covg_dir / f'batch_{batch}.npz'
         binfile = bins_dir / f'batch_{batch}.bed.gz'
-        covg = np.load(infile)
         bins = load_bins(binfile)
-        assert covg['matrix'].shape[0] == bins.shape[0]
-        samples = list(covg['labels'])
-        assert pd.Series(samples).is_unique
-        covg = pd.DataFrame(covg['matrix'], index=bins.index, columns=samples)
+        covg = covg_from_bigwigs(bigwig_paths_file, bins)
         # Sort by gene and position along gene instead of genomic coordinate
         covg = covg.sort_index()
+        samples = covg.columns
 
         outdir.mkdir(exist_ok=True)
         if len(pheno_files) > 0:
@@ -388,7 +424,7 @@ def create_parser():
 
     # Subparser for 'prepare'
     parser_prepare = subparsers.add_parser('prepare', help='Prepare RNA-seq coverage for a batch of genes')
-    parser_prepare.add_argument('-i', '--input-covg-dir', type=Path, metavar='DIR', required=True, help='Directory of per-batch numpy archive files (.npz) containing mean coverage per bin for all samples.')
+    parser_prepare.add_argument('-i', '--bigwig-paths-file', type=Path, metavar='FILE', required=True, help='File containing list of paths to per-sample bigWig files. Basenames of files will be used as sample IDs.')
     parser_prepare.add_argument('--bins-dir', type=Path, metavar='DIR', required=True, help='Directory of per-batch BED files containing bin regions. Must have start, end and bin ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of corresponding input coverage file.')
     parser_prepare_batch = parser_prepare.add_mutually_exclusive_group(required=True)
     parser_prepare_batch.add_argument('-b', '--batch', type=int, metavar='N', help='Batch ID to process. Batch IDs are integers starting from 0.')
@@ -434,7 +470,7 @@ if __name__ == '__main__':
         else:
             pheno_paths = []
         batches = [args.batch] if args.batch is not None else list(range(args.n_batches))
-        prepare(args.input_covg_dir, args.bins_dir, batches, pheno_paths, args.output_dir)
+        prepare(args.bigwig_paths_file, args.bins_dir, batches, pheno_paths, args.output_dir)
     elif args.subcommand == 'fit':
         if args.norm_covg_dir is not None:
             norm_covg_dirs = args.norm_covg_dir
