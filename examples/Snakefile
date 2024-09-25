@@ -35,7 +35,7 @@ rule get_bigwig:
         bw = working_dir / 'covg_bigwig' / '{sample_id}.bw',
     params:
         bigwig_dir = working_dir / 'covg_bigwig',
-    threads: 16,
+    threads: 16
     shell:
         """
         mkdir -p {params.bigwig_dir}
@@ -99,8 +99,6 @@ rule prepare_coverage:
         bw_file_list = str(working_dir / 'covg_bigwig_files.txt'),
         bins_dir = working_dir / 'gene_bins',
         covg_norm_dir = str(working_dir / 'covg_norm_{dset}'),
-    resources:
-        mem_mb = 32000,
     shell:
         """
         mkdir -p {params.covg_norm_dir}

@@ -236,7 +236,10 @@ def covg_from_bigwigs(bigwig_paths_file: Path, bins: pd.DataFrame) -> pd.DataFra
                 chrom = bins.loc[(gene_id, pos), 'chrom']
                 start = bins.loc[(gene_id, pos), 'chrom_start']
                 end = bins.loc[(gene_id, pos), 'chrom_end']
-                covg[j, i] = f.stats(chrom, start, end, type='mean', exact=True)[0]
+                try:
+                    covg[j, i] = f.stats(chrom, start, end, type='mean', exact=True)[0]
+                except RuntimeError as e:
+                    print(f"RuntimeError for {gene_id}, {chrom}:{start}-{end} in file {bw.stem}: {e}", flush=True)
     samples = [bw.stem for bw in bigwig_paths]
     df = pd.DataFrame(covg, index=bins.index, columns=samples)
     return df
@@ -306,12 +309,29 @@ def regress_out_phenos_single(y: pd.Series, x: np.array, gene_id: str) -> pd.Dat
     resid = y - model.predict(x_sig)
     return pd.Series(resid, index=y.index)
 
-def regress_out_phenos(df: pd.DataFrame, phenos: pd.core.groupby.DataFrameGroupBy, gene_id: str) -> pd.DataFrame:
+def regress_out_phenos_gene(df: pd.DataFrame, phenos: pd.core.groupby.DataFrameGroupBy, gene_id: str) -> pd.DataFrame:
     """Regress out phenotypes per gene"""
     if gene_id in phenos.groups:
         x = phenos.get_group(gene_id).to_numpy().T
         df = df.apply(regress_out_phenos_single, axis=1, args=(x, gene_id)) # axis=1 means by row, i.e. index of Series is column names
     return df
+
+def regress_out_phenos(covg: pd.DataFrame, pheno_files: Path) -> pd.DataFrame:
+    """Regress out phenotypes from coverage data"""
+    print(f'Loading phenotypes from {len(pheno_files)} file{"" if len(pheno_files) == 1 else "s"} to regress out...', flush=True)
+    phenos = [load_phenotypes(f, covg.columns).reset_index() for f in pheno_files]
+    phenos = pd.concat(phenos, axis=0)
+    # Parse gene IDs from phenotype IDs:
+    pheno_genes = phenos['phenotype_id'].str.extract(r'([a-zA-Z0-9]+)')[0]
+    phenos = phenos.drop('phenotype_id', axis=1)
+    phenos = phenos.groupby(pheno_genes)
+    # Regress out phenotypes:
+    prev_index = covg.index.copy()
+    covg = covg.groupby("gene_id", group_keys=False).apply(
+        lambda c: regress_out_phenos_gene(c, phenos, c.name)
+    )
+    assert covg.index.equals(prev_index)
+    return covg
 
 def prepare(bigwig_paths_file: Path, bins_dir: Path, batches: list, pheno_files: list, outdir: Path):
     """Assemble per-sample coverage, split into batches, and save to numpy binary files"""
@@ -322,23 +342,10 @@ def prepare(bigwig_paths_file: Path, bins_dir: Path, batches: list, pheno_files:
         covg = covg_from_bigwigs(bigwig_paths_file, bins)
         # Sort by gene and position along gene instead of genomic coordinate
         covg = covg.sort_index()
-        samples = covg.columns
-
-        outdir.mkdir(exist_ok=True)
-        if len(pheno_files) > 0:
-            print(f'Loading phenotypes from {len(pheno_files)} file{"" if len(pheno_files) == 1 else "s"} to regress out...', flush=True)
-            phenos = [load_phenotypes(f, samples).reset_index() for f in pheno_files]
-            phenos = pd.concat(phenos, axis=0)
-            # Parse gene IDs from phenotype IDs:
-            pheno_genes = phenos['phenotype_id'].str.extract(r'([a-zA-Z0-9]+)')[0]
-            phenos = phenos.drop('phenotype_id', axis=1)
-            phenos = phenos.groupby(pheno_genes)
         covg = normalize_coverage(covg, bins)
         if len(pheno_files) > 0:
-            # Regress out phenotypes:
-            prev_index = covg.index.copy()
-            covg = covg.groupby('gene_id', group_keys=False).apply(lambda c: regress_out_phenos(c, phenos, c.name))
-            assert covg.index.equals(prev_index)
+            covg = regress_out_phenos(covg, pheno_files)
+        outdir.mkdir(exist_ok=True)
         mat = covg.to_numpy()
         np.save(outdir / f'batch_{batch}.npy', mat)
         b = bins.loc[covg.index, :]
@@ -346,7 +353,7 @@ def prepare(bigwig_paths_file: Path, bins_dir: Path, batches: list, pheno_files:
         # If samples.txt doesn't exist, write it:
         if not (outdir / 'samples.txt').exists():
             with open(outdir / 'samples.txt', 'w') as f:
-                f.write('\n'.join(samples) + '\n')
+                f.write('\n'.join(covg.columns) + '\n')
         print(f'Coverage saved in {outdir}', flush=True)
 
 def subset_pcs_fpca(fpca: FPCA, var_expl: float, fpca_basis: str):

@@ -17,6 +17,10 @@ mkdir -p data_bash_script/ex5
 ## tail -n +9 data_input/samples.txt > data_input/samples.dset2.txt
 ## echo -e 'dset1\ndset2' > data_input/datasets.txt
 
+cat data_input/samples.txt | sed 's/^/data_bash_script\/covg_bigwig\//'| sed 's/$/.bw/' > data_bash_script/covg_bigwig_files.txt
+cat data_input/samples.dset1.txt | sed 's/^/data_bash_script\/covg_bigwig\//'| sed 's/$/.bw/' > data_bash_script/covg_bigwig_files.dset1.txt
+cat data_input/samples.dset2.txt | sed 's/^/data_bash_script\/covg_bigwig\//'| sed 's/$/.bw/' > data_bash_script/covg_bigwig_files.dset2.txt
+
 seq 0 $((n_batches-1)) > data_bash_script/batches.txt
 
 ###########################################
@@ -46,13 +50,20 @@ python ../scripts/get_gene_bins.py \
     --batch-size $batch_size \
     --outdir data_bash_script/gene_bins
 
+## Adaptive binning
+python ../scripts/get_gene_bins.py \
+    --gtf data_bash_script/collapsed.gtf.gz \
+    --chromosomes data_input/chr_lengths.genome \
+    --binning-method adaptive \
+    --bigwig-paths-file data_bash_script/covg_bigwig_files.txt \
+    --min-mean-total-covg 128 \
+    --max-corr 0.8 \
+    --batch-size $batch_size \
+    --outdir data_bash_script/gene_bins_adaptive
+
 ##########################
 ## Fit and apply models ##
 ##########################
-
-cat data_input/samples.txt | sed 's/^/data_bash_script\/covg_bigwig\//'| sed 's/$/.bw/' > data_bash_script/covg_bigwig_files.txt
-cat data_input/samples.dset1.txt | sed 's/^/data_bash_script\/covg_bigwig\//'| sed 's/$/.bw/' > data_bash_script/covg_bigwig_files.dset1.txt
-cat data_input/samples.dset2.txt | sed 's/^/data_bash_script\/covg_bigwig\//'| sed 's/$/.bw/' > data_bash_script/covg_bigwig_files.dset2.txt
 
 ## Single dataset, fit all batches in one go, no regressing out Pantry phenotypes
 python $script prepare -i data_bash_script/covg_bigwig_files.txt --bins-dir data_bash_script/gene_bins/ --n-batches 3 -o data_bash_script/ex1/covg_norm/
