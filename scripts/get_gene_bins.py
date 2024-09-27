@@ -112,13 +112,14 @@ def get_adaptive_bins(covg: np.array, min_mean_total_covg: float, max_corr: floa
         current = current.right
     return starts, ends
 
-def get_adaptive_bins_gene(anno: pd.DataFrame, bigwig_paths: list, min_mean_total_covg: float, max_corr: float) -> pd.DataFrame:
+def get_adaptive_bins_gene(anno: pd.DataFrame, bigwig_paths: list, chrom_lengths: dict, min_mean_total_covg: float, max_corr: float) -> pd.DataFrame:
     """Get adaptive bins for one gene
     
     Args:
-        anno: DataFrame with columns 'seqname', 'start', 'end', 'strand',
-          'feature'
+        anno: DataFrame with columns 'seqname', 'start', 'end', 'strand'
         bigwig_paths: List of paths to bigWig files to use for coverage data
+        chrom_lengths: Dictionary of chromosome lengths to restrict bin ends
+          after extending gene regions
         min_mean_total_covg: Minimum allowed mean total coverage per sample for
           a bin
         max_corr: Maximum allowed correlation between normalized coverage of
@@ -129,12 +130,16 @@ def get_adaptive_bins_gene(anno: pd.DataFrame, bigwig_paths: list, min_mean_tota
     """
     seqname = anno.iloc[0].seqname
     start = max(0, anno.iloc[0].start - 1000)
-    end = anno.iloc[-1].end + 1000
+    end = min(anno.iloc[-1].end + 1000, chrom_lengths[seqname])
     strand = anno.iloc[0].strand
     covg = np.zeros((end - start, len(bigwig_paths)))
     for i, path in enumerate(bigwig_paths):
-        bw = pyBigWig.open(path)
-        covg[:, i] = bw.values(seqname, start, end)
+        with pyBigWig.open(str(path)) as bw:
+            try:
+                covg[:, i] = bw.values(seqname, start, end)
+            except RuntimeError as e:
+                print(f"RuntimeError for {seqname}:{start}-{end} in file {bw.stem}: {e}", flush=True)
+                raise e
     starts, ends = get_adaptive_bins(covg, min_mean_total_covg, max_corr)
     bins = pd.DataFrame({
         'seqname': seqname,
@@ -150,13 +155,15 @@ def get_adaptive_bins_gene(anno: pd.DataFrame, bigwig_paths: list, min_mean_tota
     assert bins.start.unique().shape[0] == bins.shape[0]
     return bins
 
-def get_adaptive_bins_batch(anno: pd.DataFrame, bigwig_paths: list, min_mean_total_covg: float, max_corr: float) -> pd.DataFrame:
+def get_adaptive_bins_batch(anno: pd.DataFrame, bigwig_paths: list, chrom_lengths: dict, min_mean_total_covg: float, max_corr: float) -> pd.DataFrame:
     """Get adaptive bins for each gene in the annotation
     
     Args:
         anno: DataFrame with columns 'gene_id', 'seqname', 'start', 'end',
           'strand', 'feature'
         bigwig_paths: List of paths to bigWig files to use for coverage data
+        chrom_lengths: Dictionary of chromosome lengths to restrict bin ends
+          after extending gene regions
         min_mean_total_covg: Minimum allowed mean total coverage per sample for
           a bin
         max_corr: Maximum allowed correlation between normalized coverage of
@@ -166,7 +173,7 @@ def get_adaptive_bins_batch(anno: pd.DataFrame, bigwig_paths: list, min_mean_tot
         DataFrame with columns 'gene_id', 'seqname', 'start', 'end', 'strand', 'feature'
     """
     anno = anno.groupby('gene_id')
-    bins = anno.apply(lambda x: get_adaptive_bins_gene(x, bigwig_paths, min_mean_total_covg, max_corr), include_groups=False)
+    bins = anno.apply(lambda x: get_adaptive_bins_gene(x, bigwig_paths, chrom_lengths, min_mean_total_covg, max_corr), include_groups=False)
     bins = bins.reset_index()
     return bins
 
@@ -336,8 +343,8 @@ def name_bins_with_gene_coords(bins: pd.DataFrame, exons: pd.DataFrame) -> pd.Da
     bins['name'] = bins['gene_id'] + '_' + starts.astype(str) + '_' + ends.astype(str)
     return bins
 
-def load_chromosomes(chrom_file: Path) -> list:
-    """Use chromosome lengths file to correctly sort BED file"""
+def load_chromosomes(chrom_file: Path) -> pd.DataFrame:
+    """Load chromosome length and sort order info"""
     chrom = pd.read_csv(
         chrom_file,
         sep='\t',
@@ -345,9 +352,9 @@ def load_chromosomes(chrom_file: Path) -> list:
         names=['chrom', 'length'],
         dtype={'chrom': str, 'length': int}
     )
-    return list(chrom['chrom'])
+    return chrom
 
-def save_bed(bins: pd.DataFrame, chromosomes: Path, exons: pd.DataFrame, outfile: Path):
+def save_bed(bins: pd.DataFrame, chromosomes: list, exons: pd.DataFrame, outfile: Path):
     """Prepare BED format"""
     bins['gene_id2'] = bins['gene_id']
     bins = bins.groupby('gene_id2').apply(name_bins_with_gene_coords, exons, include_groups=False)
@@ -368,6 +375,7 @@ parser.add_argument('--bin-width-coding', type=int, default=16, metavar='N', hel
 parser.add_argument('--bin-width-noncoding', type=int, default=128, metavar='N', help='For method "bin-width", width of bins for noncoding (non-exonic) regions of the genes. (default: %(default)s)')
 parser.add_argument('--n-bins', type=int, default=24, metavar='N', help='For method "n-bins", number of bins to split each feature (exon, intron, etc.) into. (default: %(default)s)')
 parser.add_argument('--batch-size', type=int, default=200, metavar='N', help='Number of genes (at most) per batch. (default: %(default)s)')
+parser.add_argument('--batch', type=int, metavar='N', help='Batch ID to process. Batch IDs are integers starting from 0. If omitted, all batches will be processed.')
 args = parser.parse_args()
 
 anno = read_gtf(args.gtf)
@@ -389,6 +397,8 @@ anno = anno[['gene_id', 'seqname', 'start', 'end', 'strand', 'feature']]
 anno = anno.sort_values(by=['gene_id', 'start'])
 
 chromosomes = load_chromosomes(args.chromosomes)
+chrom_lengths = dict(zip(chromosomes['chrom'], chromosomes['length']))
+chromosomes = list(chromosomes['chrom'])
 
 # Split genes into batches
 genes = anno['gene_id'].sort_values().unique()
@@ -401,11 +411,13 @@ anno['batch'] = [gene_batch[gene_id] for gene_id in anno['gene_id']]
 args.outdir.mkdir(exist_ok=True)
 genes_removed = 0
 for batch_id, batch_anno in anno.groupby('batch'):
+    if args.batch is not None and batch_id != args.batch:
+        continue
     if args.binning_method == 'adaptive':
         assert args.bigwig_paths_file is not None, 'For method "adaptive", must provide --bigwig-paths-file'
         with open(args.bigwig_paths_file) as f:
             bigwig_paths = f.read().splitlines()
-        batch_bins = get_adaptive_bins_batch(batch_anno, bigwig_paths, args.min_mean_total_covg, args.max_corr)
+        batch_bins = get_adaptive_bins_batch(batch_anno, bigwig_paths, chrom_lengths, args.min_mean_total_covg, args.max_corr)
         batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
     else:
         # For each gene, add introns, upstream, and downstream regions:

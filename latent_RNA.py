@@ -244,13 +244,23 @@ def covg_from_bigwigs(bigwig_paths_file: Path, bins: pd.DataFrame) -> pd.DataFra
     df = pd.DataFrame(covg, index=bins.index, columns=samples)
     return df
 
-def normalize_coverage(df: pd.DataFrame, bins: pd.DataFrame) -> pd.DataFrame:
+def normalize_coverage(df: pd.DataFrame, bins: pd.DataFrame, pseudocount: float = 8) -> pd.DataFrame:
     """Normalize coverage for each gene in one batch.
+
+    1. A pseudocount is added to the mean coverage to allow log-transformation
+       and reduce the impact of noise in low-coverage bins.
+    2. Coverage is normalized to fraction of gene's coverage for each bin, to
+       control for total gene expression and sequencing depth.
+    3. Coverage is normalized to mean fraction of gene's coverage per bp for
+       each bin.
 
     Args:
         df: The input DataFrame containing mean coverage per bin per sample.
-          Rows are bins and columns are samples.
+          Rows are bins and columns are samples. Multi-indexed by gene_id and
+          pos.
         bins: The input DataFrame containing bin information.
+        pseudocount: Pseudocount to add to coverage values (mean coverage per
+          bp for each bin) before normalization.
 
     Returns:
         The normalized coverage DataFrame.
@@ -258,14 +268,17 @@ def normalize_coverage(df: pd.DataFrame, bins: pd.DataFrame) -> pd.DataFrame:
     Raises:
         AssertionError: If the input DataFrame contains any NaN values.
     """
-    # For log-transform, add pseudocount of 1 per bp
-    df += 1
-    # Compute total coverage across the gene per sample for normalization
+    assert df.index.equals(bins.index)
+    # Add pseudocount to mean coverage per bp for each bin
+    df += pseudocount
+    # Convert to total coverage per bin
     lengths = bins['chrom_end'] - bins['chrom_start']
-    total_coverage = df.mul(lengths.loc[df.index], axis=0).sum(axis=0)
-    # Get mean fraction of gene's coverage per bp for each bin
-    df = df.div(total_coverage, axis=1)
+    df = df.mul(lengths, axis=0)
+    # Normalize to fraction of gene's coverage for each bin
+    df = df.groupby('gene_id', group_keys=False).apply(lambda x: x.div(x.sum(axis=0), axis=1))
     assert not df.isna().any().any()
+    # Normalize to mean fraction of gene's coverage per bp for each bin
+    df = df.div(lengths, axis=0)
     # Variance stabilization
     df = np.log2(df)
     return df
@@ -342,6 +355,7 @@ def prepare(bigwig_paths_file: Path, bins_dir: Path, batches: list, pheno_files:
         covg = covg_from_bigwigs(bigwig_paths_file, bins)
         # Sort by gene and position along gene instead of genomic coordinate
         covg = covg.sort_index()
+        bins = bins.loc[covg.index, :]
         covg = normalize_coverage(covg, bins)
         if len(pheno_files) > 0:
             covg = regress_out_phenos(covg, pheno_files)
