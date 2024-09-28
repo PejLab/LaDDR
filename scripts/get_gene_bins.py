@@ -112,26 +112,18 @@ def get_adaptive_bins(covg: np.array, min_mean_total_covg: float, max_corr: floa
         current = current.right
     return starts, ends
 
-def get_adaptive_bins_gene(anno: pd.DataFrame, bigwig_paths: list, chrom_lengths: dict, min_mean_total_covg: float, max_corr: float) -> pd.DataFrame:
-    """Get adaptive bins for one gene
-    
+def load_covg_from_bigwigs(bigwig_paths: list, seqname: str, start: int, end: int) -> np.array:
+    """Load coverage data from bigWig files
+
     Args:
-        anno: DataFrame with columns 'seqname', 'start', 'end', 'strand'
-        bigwig_paths: List of paths to bigWig files to use for coverage data
-        chrom_lengths: Dictionary of chromosome lengths to restrict bin ends
-          after extending gene regions
-        min_mean_total_covg: Minimum allowed mean total coverage per sample for
-          a bin
-        max_corr: Maximum allowed correlation between normalized coverage of
-          adjacent bins
+        bigwig_paths: List of paths to bigWig files to load
+        seqname: Chromosome name
+        start: Start position (0-based)
+        end: End position (0-based)
 
     Returns:
-        DataFrame with columns 'seqname', 'start', 'end', 'strand', 'feature'
+        Array of shape (end - start, len(bigwig_paths)) with coverage data
     """
-    seqname = anno.iloc[0].seqname
-    start = max(0, anno.iloc[0].start - 1000)
-    end = min(anno.iloc[-1].end + 1000, chrom_lengths[seqname])
-    strand = anno.iloc[0].strand
     covg = np.zeros((end - start, len(bigwig_paths)))
     for i, path in enumerate(bigwig_paths):
         with pyBigWig.open(str(path)) as bw:
@@ -140,30 +132,15 @@ def get_adaptive_bins_gene(anno: pd.DataFrame, bigwig_paths: list, chrom_lengths
             except RuntimeError as e:
                 print(f"RuntimeError for {seqname}:{start}-{end} in file {bw.stem}: {e}", flush=True)
                 raise e
-    starts, ends = get_adaptive_bins(covg, min_mean_total_covg, max_corr)
-    bins = pd.DataFrame({
-        'seqname': seqname,
-        'start': starts,
-        'end': ends,
-        'strand': strand,
-        'feature': 'adaptive',
-    })
-    bins['start'] = start + bins['start']
-    bins['end'] = start + bins['end']
-    assert bins.iloc[0].start == start 
-    assert bins.iloc[-1].end == end
-    assert bins.start.unique().shape[0] == bins.shape[0]
-    return bins
+    return covg
 
-def get_adaptive_bins_batch(anno: pd.DataFrame, bigwig_paths: list, chrom_lengths: dict, min_mean_total_covg: float, max_corr: float) -> pd.DataFrame:
+def get_adaptive_bins_batch(genes: pd.DataFrame, bigwig_paths: list, min_mean_total_covg: float, max_corr: float) -> pd.DataFrame:
     """Get adaptive bins for each gene in the annotation
     
     Args:
-        anno: DataFrame with columns 'gene_id', 'seqname', 'start', 'end',
-          'strand', 'feature'
+        genes: DataFrame with index 'gene_id' and columns 'seqname', 'start',
+          'end', 'strand', 'feature'
         bigwig_paths: List of paths to bigWig files to use for coverage data
-        chrom_lengths: Dictionary of chromosome lengths to restrict bin ends
-          after extending gene regions
         min_mean_total_covg: Minimum allowed mean total coverage per sample for
           a bin
         max_corr: Maximum allowed correlation between normalized coverage of
@@ -172,12 +149,28 @@ def get_adaptive_bins_batch(anno: pd.DataFrame, bigwig_paths: list, chrom_length
     Returns:
         DataFrame with columns 'gene_id', 'seqname', 'start', 'end', 'strand', 'feature'
     """
-    anno = anno.groupby('gene_id')
-    bins = anno.apply(lambda x: get_adaptive_bins_gene(x, bigwig_paths, chrom_lengths, min_mean_total_covg, max_corr), include_groups=False)
+    def get_adaptive_bins_gene(gene: pd.DataFrame) -> pd.DataFrame:
+        seqname, start, end, strand = gene[['seqname', 'start', 'end', 'strand']].iloc[0]
+        covg = load_covg_from_bigwigs(bigwig_paths, seqname, start, end)
+        starts, ends = get_adaptive_bins(covg, min_mean_total_covg, max_corr)
+        bins = pd.DataFrame({
+            'seqname': seqname,
+            'start': starts,
+            'end': ends,
+            'strand': strand,
+            'feature': 'adaptive',
+        })
+        bins['start'] = start + bins['start']
+        bins['end'] = start + bins['end']
+        assert bins.iloc[0].start == start 
+        assert bins.iloc[-1].end == end
+        assert bins.start.unique().shape[0] == bins.shape[0]
+        return bins
+    bins = genes.groupby('gene_id').apply(lambda x: get_adaptive_bins_gene(x), include_groups=False)
     bins = bins.reset_index()
     return bins
 
-def add_noncoding_regions(anno: pd.DataFrame) -> pd.DataFrame:
+def add_noncoding_regions(anno: pd.DataFrame, gene: pd.DataFrame) -> pd.DataFrame:
     """Add noncoding regions to the annotations for one gene
     
     Inserts an intron between each pair of consecutive exons, and adds
@@ -185,31 +178,36 @@ def add_noncoding_regions(anno: pd.DataFrame) -> pd.DataFrame:
 
     Args:
         anno: DataFrame with columns 'seqname', 'start', 'end', 'strand',
-        'feature'
+          and 'feature'. Each row represents an exonic region.
+        genes: DataFrame with one row and columns 'seqname', 'start', 'end',
+          'strand'. Start and end give the range to be binned, which includes
+          the upstream and downstream regions.
 
     Returns:
         DataFrame that is the input DataFrame with additional rows for noncoding
         regions
     """
-    strand = anno.iloc[0].strand
+    seqname, start, end, strand = gene[['seqname', 'start', 'end', 'strand']]
     assert strand in {'+', '-'}
     assert anno.start.unique().shape[0] == anno.shape[0]
     assert (anno.feature == 'exon').all()
     features, starts, ends = [], [], []
-    features.append('upstream' if strand == '+' else 'downstream')
-    starts.append(max(0, anno.iloc[0].start - 1000))
-    ends.append(anno.iloc[0].start)
+    if anno.iloc[0].start > start:
+        features.append('upstream' if strand == '+' else 'downstream')
+        starts.append(start)
+        ends.append(anno.iloc[0].start)
     for i in range(anno.shape[0] - 1):
         # Only add intron if there is a gap between exons:
         if anno.iloc[i + 1].start - anno.iloc[i].end > 0:
             features.append('intron')
             starts.append(anno.iloc[i].end)
             ends.append(anno.iloc[i + 1].start)
-    features.append('downstream' if strand == '+' else 'upstream')
-    starts.append(anno.iloc[-1].end)
-    ends.append(anno.iloc[-1].end + 1000)
+    if anno.iloc[-1].end < end:
+        features.append('downstream' if strand == '+' else 'upstream')
+        starts.append(anno.iloc[-1].end)
+        ends.append(end)
     nc = pd.DataFrame({
-        'seqname': anno.iloc[0].seqname,
+        'seqname': seqname,
         'start': starts,
         'end': ends,
         'strand': strand,
@@ -224,7 +222,7 @@ def split_region_bin_width(region: pd.DataFrame, bin_width_coding: int, bin_widt
     
     Args:
         region: DataFrame with one row representing the region to split. Must
-          have columns 'seqname', 'start', 'end', 'strand', 'feature'
+          have columns 'seqname', 'start', 'end', 'strand', 'feature'.
         bin_width_coding: Width of bins for coding regions (feature == 'exon')
         bin_width_noncoding: Width of bins for noncoding regions (feature !=
           'exon')
@@ -326,23 +324,6 @@ def remove_bins_overlapping_exon(bins: pd.DataFrame, exons: pd.DataFrame) -> pd.
     bins = bins.loc[~overlap, :]
     return bins
 
-def name_bins_with_gene_coords(bins: pd.DataFrame, exons: pd.DataFrame) -> pd.DataFrame:
-    """Name bins with gene-relative coordinates"""
-    assert bins['gene_id'].nunique() == 1
-    # assert 'exon' in bins['feature'].values
-    gene_id = bins['gene_id'].iloc[0]
-    # Using strand to orient correctly, define gene start as the start of the first exon
-    if bins.iloc[0].strand == '+':
-        gene_start = exons.loc[exons['gene_id'] == gene_id, 'start'].min()
-        starts = bins['start'] - gene_start
-        ends = bins['end'] - gene_start
-    else:
-        gene_start = exons.loc[exons['gene_id'] == gene_id, 'end'].max()
-        starts = gene_start - bins['end']
-        ends = gene_start - bins['start']
-    bins['name'] = bins['gene_id'] + '_' + starts.astype(str) + '_' + ends.astype(str)
-    return bins
-
 def load_chromosomes(chrom_file: Path) -> pd.DataFrame:
     """Load chromosome length and sort order info"""
     chrom = pd.read_csv(
@@ -354,10 +335,64 @@ def load_chromosomes(chrom_file: Path) -> pd.DataFrame:
     )
     return chrom
 
-def save_bed(bins: pd.DataFrame, chromosomes: list, exons: pd.DataFrame, outfile: Path):
+def gene_coordinates(anno: pd.DataFrame, chrom_lengths: dict) -> pd.DataFrame:
+    """Get various useful coordinates for each gene
+
+    Start and end are extended by 1kb on each side to include upstream and
+    downstream regions.
+    
+    Args:
+        anno: DataFrame that includes columns 'gene_id', 'seqname', 'start',
+          'end', and 'strand'. Each row represents an exonic region.
+        chrom_lengths: Dictionary of chromosome lengths to restrict noncoding
+          extensions at the ends of chromosomes
+
+    Returns:
+        DataFrame with index 'gene_id' and columns 'seqname', 'start', 'end',
+        'strand', and 'tss'
+    """
+    def gene_coord_single(anno: pd.DataFrame, chrom_lengths: dict) -> pd.DataFrame:
+        """Get various useful coordinates for one gene"""
+        # gene_id = anno['gene_id'].iloc[0]
+        seqname = anno['seqname'].iloc[0]
+        strand = anno['strand'].iloc[0]
+        start = anno['start'].min()
+        end = anno['end'].max()
+        tss = start if strand == '+' else end
+        start = max(0, start - 1000)
+        end = min(end + 1000, chrom_lengths[seqname])
+        return pd.DataFrame({
+            'seqname': seqname,
+            'start': start,
+            'end': end,
+            'strand': strand,
+            'tss': tss,
+        }, index=[0])
+    genes = anno.groupby('gene_id').apply(gene_coord_single, chrom_lengths, include_groups=False)
+    genes = genes.reset_index(level=1, drop=True)
+    genes = genes.sort_values(by='gene_id')
+    return genes
+
+def name_bins_with_gene_coords(bins: pd.DataFrame, genes: pd.DataFrame) -> pd.DataFrame:
+    """Name bins with gene-relative coordinates"""
+    assert bins['gene_id'].nunique() == 1
+    # assert 'exon' in bins['feature'].values
+    gene_id = bins['gene_id'].iloc[0]
+    tss = genes.at[gene_id, 'tss']
+    # Using strand to orient correctly, define gene start as the start of the first exon
+    if bins.iloc[0].strand == '+':
+        starts = bins['start'] - tss
+        ends = bins['end'] - tss
+    else:
+        starts = tss - bins['end']
+        ends = tss - bins['start']
+    bins['name'] = bins['gene_id'] + '_' + starts.astype(str) + '_' + ends.astype(str)
+    return bins
+
+def save_bed(bins: pd.DataFrame, chromosomes: list, genes: pd.DataFrame, outfile: Path):
     """Prepare BED format"""
     bins['gene_id2'] = bins['gene_id']
-    bins = bins.groupby('gene_id2').apply(name_bins_with_gene_coords, exons, include_groups=False)
+    bins = bins.groupby('gene_id2').apply(name_bins_with_gene_coords, genes, include_groups=False)
     bins = bins[['seqname', 'start', 'end', 'name', 'feature', 'strand']]
     bins['seqname'] = pd.Categorical(bins['seqname'], categories=chromosomes, ordered=True)
     bins = bins.sort_values(by=['seqname', 'start'])
@@ -367,7 +402,7 @@ parser = argparse.ArgumentParser(description='Get gene feature bins from GTF fil
 parser.add_argument('-g', '--gtf', type=Path, required=True, metavar='FILE', help='Transcript annotation in GTF format. Must be the collapsed annotation produced by `collapse_annotation.py`.')
 parser.add_argument('-c', '--chromosomes', type=Path, required=True, metavar='FILE', help='Chromosome lengths file, e.g. chrNameLength.txt from STAR index, to sort chromosomes.')
 parser.add_argument('--outdir', type=Path, required=True, metavar='PATH', help='Directory in which to save per-batch BED files.')
-parser.add_argument('--binning-method', choices=['adaptive', 'bin-width', 'n-bins'], default='n-bins', help='Whether to determine bins adaptively from coverage data, split all coding/noncoding regions into fixed-width bins, or split each region into a fixed number of bins. (default: %(default)s)')
+parser.add_argument('--binning-method', choices=['adaptive1', 'adaptive2', 'bin-width', 'n-bins'], default='n-bins', help='Whether to determine bins adaptively from coverage data, split all coding/noncoding regions into fixed-width bins, or split each region into a fixed number of bins. (default: %(default)s)')
 parser.add_argument('--bigwig-paths-file', type=Path, metavar='FILE', help='For method "adaptive", file containing list of paths to per-sample bigWig files to use for coverage data.')
 parser.add_argument('--min-mean-total-covg', type=float, default=128, metavar='FLOAT', help='For method "adaptive", minimum allowed mean total coverage per sample for a bin. (default: %(default)s)')
 parser.add_argument('--max-corr', type=float, default=0.8, metavar='FLOAT', help='For method "adaptive", maximum allowed correlation between normalized coverage of adjacent bins. (default: %(default)s)')
@@ -400,28 +435,39 @@ chromosomes = load_chromosomes(args.chromosomes)
 chrom_lengths = dict(zip(chromosomes['chrom'], chromosomes['length']))
 chromosomes = list(chromosomes['chrom'])
 
+genes = gene_coordinates(anno, chrom_lengths)
+
 # Split genes into batches
-genes = anno['gene_id'].sort_values().unique()
-n_batches = math.ceil(len(genes) / args.batch_size)
+# genes = anno['gene_id'].sort_values().unique()
+n_batches = math.ceil(genes.shape[0] / args.batch_size)
 gene_batch = {}
-for i, gene_id in enumerate(genes):
+for i, gene_id in enumerate(genes.index):
     gene_batch[gene_id] = i // args.batch_size
 anno['batch'] = [gene_batch[gene_id] for gene_id in anno['gene_id']]
+genes['batch'] = [gene_batch[gene_id] for gene_id in genes.index]
+anno = anno.groupby('batch')
+genes = genes.groupby('batch')
+
+if args.binning_method in ['adaptive1', 'adaptive2']:
+    assert args.bigwig_paths_file is not None, 'For adaptive binning, must provide --bigwig-paths-file'
+    with open(args.bigwig_paths_file) as f:
+        bigwig_paths = f.read().splitlines()
 
 args.outdir.mkdir(exist_ok=True)
 genes_removed = 0
-for batch_id, batch_anno in anno.groupby('batch'):
-    if args.batch is not None and batch_id != args.batch:
-        continue
-    if args.binning_method == 'adaptive':
-        assert args.bigwig_paths_file is not None, 'For method "adaptive", must provide --bigwig-paths-file'
-        with open(args.bigwig_paths_file) as f:
-            bigwig_paths = f.read().splitlines()
-        batch_bins = get_adaptive_bins_batch(batch_anno, bigwig_paths, chrom_lengths, args.min_mean_total_covg, args.max_corr)
+batches = range(n_batches) if args.batch is None else [args.batch]
+for batch_id in batches:
+    batch_genes = genes.get_group(batch_id)
+    if args.binning_method == 'adaptive1':
+        batch_bins = get_adaptive_bins_batch(batch_genes, bigwig_paths, args.min_mean_total_covg, args.max_corr)
         batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
     else:
+        batch_anno = anno.get_group(batch_id)
         # For each gene, add introns, upstream, and downstream regions:
-        batch_anno = batch_anno.groupby('gene_id').apply(add_noncoding_regions, include_groups=False)
+        batch_anno = batch_anno.groupby('gene_id').apply(
+            lambda x: add_noncoding_regions(x, batch_genes.loc[x.name]),
+            include_groups=False
+        )
         batch_anno = batch_anno.reset_index(level='gene_id')
         batch_anno = batch_anno.sort_values(by=['gene_id', 'start'])
         if args.binning_method == 'bin-width':
@@ -433,9 +479,10 @@ for batch_id, batch_anno in anno.groupby('batch'):
         # Remove any genes with no exon regions remaining:
         n_genes_before = batch_bins['gene_id'].nunique()
         batch_bins = batch_bins.groupby('gene_id').filter(lambda x: 'exon' in x['feature'].values)
-        genes_removed = n_genes_before - batch_bins['gene_id'].nunique()
-        if genes_removed > 0:
-            print(f'Removed {genes_removed} genes with no unique exonic regions')
+        genes_removed += n_genes_before - batch_bins['gene_id'].nunique()
     outfile = args.outdir / f'batch_{batch_id}.bed.gz'
-    save_bed(batch_bins, chromosomes, exons, outfile)
+    save_bed(batch_bins, chromosomes, batch_genes, outfile)
     print(f'Saved batch {batch_id} to {outfile}')
+
+if genes_removed > 0:
+    print(f'Removed {genes_removed} genes with no unique exonic regions')

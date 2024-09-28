@@ -54,7 +54,7 @@ python ../scripts/get_gene_bins.py \
 python ../scripts/get_gene_bins.py \
     --gtf data_bash_script/collapsed.gtf.gz \
     --chromosomes data_input/chr_lengths.genome \
-    --binning-method adaptive \
+    --binning-method adaptive1 \
     --bigwig-paths-file data_bash_script/covg_bigwig_files.txt \
     --min-mean-total-covg 128 \
     --max-corr 0.8 \
