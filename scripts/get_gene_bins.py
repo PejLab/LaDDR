@@ -170,6 +170,85 @@ def get_adaptive_bins_batch(genes: pd.DataFrame, bigwig_paths: list, min_mean_to
     bins = bins.reset_index()
     return bins
 
+def estimate_var_sum_per_gene(genes: pd.DataFrame, bigwig_paths: list, covg_diff: bool = False, pseudocount: float = 8) -> pd.DataFrame:
+    """Use a subsample of genes to estimate mean sum of variance of log-coverage across samples
+
+    By dividing this by the desired number of bins per gene, we can estimate the
+    cumulative variance threshold per bin that produces the desired number of
+    bins on average.
+    
+    Args:
+        genes: DataFrame with index 'gene_id' and columns 'seqname', 'start',
+          'end', 'strand', 'feature'
+        bigwig_paths: List of paths to bigWig files to use for coverage data
+        covg_diff: If True, use the difference in coverage between adjacent bins
+        pseudocount: Pseudocount to add to coverage values (mean coverage per
+          bp for each bin)
+    """
+    n_genes = min(100, genes.shape[0])
+    sub_genes = genes.sample(n_genes)
+    total = 0
+    for gene in sub_genes.itertuples(index=False):
+        seqname, start, end = gene.seqname, gene.start, gene.end
+        covg = load_covg_from_bigwigs(bigwig_paths, seqname, start, end)
+        covg = np.log2(covg + pseudocount)
+        if covg_diff:
+            covg = np.diff(covg, axis=0, append=np.log2(pseudocount))
+        total += np.sum(np.var(covg, axis=1))
+    return total / n_genes
+
+def get_adaptive_bins_var_batch(genes: pd.DataFrame, bigwig_paths: list, var_per_bin: float, covg_diff: bool = False, pseudocount: float = 8) -> pd.DataFrame:
+    """Get adaptive bins for all genes based on coverage variance
+    
+    Args:
+        genes: DataFrame with index 'gene_id' and columns 'seqname', 'start',
+          'end', 'strand', 'feature'
+        bigwig_paths: List of paths to bigWig files to use for coverage data
+        var_per_bin: Approximate sum of per-bp variance of log-coverage across
+          samples for each bin
+        covg_diff: If True, use the difference in coverage between adjacent bins
+        pseudocount: Pseudocount to add to coverage values (mean coverage per
+          bp for each bin)
+
+    Returns:
+        DataFrame with columns 'gene_id', 'seqname', 'start', 'end', 'strand', 'feature'
+    """
+    def get_adaptive_bins_var(covg: np.array, var_per_bin: float) -> tuple:
+        covg = np.log2(covg + pseudocount)
+        if covg_diff:
+            covg = np.diff(covg, axis=0, append=np.log2(pseudocount))
+        variance = np.var(covg, axis=1)
+        starts, ends = [0], []
+        varsum = 0
+        for i, var in enumerate(variance[:-1]):
+            varsum += var
+            if varsum >= var_per_bin:
+                ends.append(i + 1)
+                starts.append(i + 1)
+                varsum = 0
+        ends.append(covg.shape[0])
+        return starts, ends
+    def get_adaptive_bins_var_gene(gene: pd.DataFrame) -> pd.DataFrame:
+        seqname, start, end, strand = gene[['seqname', 'start', 'end', 'strand']].iloc[0]
+        covg = load_covg_from_bigwigs(bigwig_paths, seqname, start, end)
+        starts, ends = get_adaptive_bins_var(covg, var_per_bin)
+        bins = pd.DataFrame({
+            'seqname': seqname,
+            'start': starts,
+            'end': ends,
+            'strand': strand,
+            'feature': 'adaptive',
+        })
+        bins['start'] = start + bins['start']
+        bins['end'] = start + bins['end']
+        assert bins.iloc[0].start == start 
+        assert bins.iloc[-1].end == end
+        assert bins.start.unique().shape[0] == bins.shape[0]
+        return bins
+    bins = genes.groupby('gene_id').apply(lambda x: get_adaptive_bins_var_gene(x), include_groups=False)
+    bins = bins.reset_index()
+    return bins
+
 def add_noncoding_regions(anno: pd.DataFrame, gene: pd.DataFrame) -> pd.DataFrame:
     """Add noncoding regions to the annotations for one gene
     
@@ -304,6 +383,45 @@ def split_regions_n_bins(anno: pd.DataFrame, n_bins: int) -> pd.DataFrame:
     bins = bins.reset_index(drop=True)
     return bins
 
+def split_large_bins(anno: pd.DataFrame, max_bin_width: int) -> pd.DataFrame:
+    """Split large bins into smaller bins
+    
+    Args:
+        bin: DataFrame with one row representing the bin to split. Must
+          have columns 'seqname', 'start', 'end', 'strand', 'feature'.
+        max_bin_width: Maximum allowed width for a bin
+
+    Returns:
+        DataFrame with one row per bin, with columns 'seqname', 'start', 'end',
+        'strand', 'feature'
+    """
+    def split_large_bin(bin: pd.DataFrame) -> pd.DataFrame:
+        assert bin.shape[0] == 1
+        bin2 = list(bin.itertuples(index=False))[0]
+        if bin2.end - bin2.start <= max_bin_width:
+            return bin
+        bin = bin2
+        n_bins = math.ceil((bin.end - bin.start) / max_bin_width)
+        posns = np.linspace(bin.start, bin.end, n_bins + 1, dtype=int)
+        bins = pd.DataFrame({
+            'seqname': bin.seqname,
+            'start': posns[:-1],
+            'end': posns[1:],
+            'strand': bin.strand,
+            'feature': bin.feature,
+        })
+        assert bins.iloc[0].start == bin.start
+        assert bins.iloc[-1].end == bin.end
+        assert bins.start.unique().shape[0] == bins.shape[0]
+        return bins
+    anno['start2'] = anno['start']
+    anno = anno.groupby(['gene_id', 'start2'])
+    bins = anno.apply(lambda x: split_large_bin(x), include_groups=False)
+    bins = bins.reset_index(level='gene_id')
+    bins = bins.reset_index(drop=True)
+    return bins
+
+
 def bins_overlap_exons(bins: pd.DataFrame, exons: pd.DataFrame) -> Iterator[bool]:
     """Check if each bin overlaps with an exon of another gene"""
     exon_intervals = defaultdict(IntervalTree)
@@ -402,13 +520,15 @@ parser = argparse.ArgumentParser(description='Get gene feature bins from GTF fil
 parser.add_argument('-g', '--gtf', type=Path, required=True, metavar='FILE', help='Transcript annotation in GTF format. Must be the collapsed annotation produced by `collapse_annotation.py`.')
 parser.add_argument('-c', '--chromosomes', type=Path, required=True, metavar='FILE', help='Chromosome lengths file, e.g. chrNameLength.txt from STAR index, to sort chromosomes.')
 parser.add_argument('--outdir', type=Path, required=True, metavar='PATH', help='Directory in which to save per-batch BED files.')
-parser.add_argument('--binning-method', choices=['adaptive1', 'adaptive2', 'bin-width', 'n-bins'], default='n-bins', help='Whether to determine bins adaptively from coverage data, split all coding/noncoding regions into fixed-width bins, or split each region into a fixed number of bins. (default: %(default)s)')
-parser.add_argument('--bigwig-paths-file', type=Path, metavar='FILE', help='For method "adaptive", file containing list of paths to per-sample bigWig files to use for coverage data.')
-parser.add_argument('--min-mean-total-covg', type=float, default=128, metavar='FLOAT', help='For method "adaptive", minimum allowed mean total coverage per sample for a bin. (default: %(default)s)')
-parser.add_argument('--max-corr', type=float, default=0.8, metavar='FLOAT', help='For method "adaptive", maximum allowed correlation between normalized coverage of adjacent bins. (default: %(default)s)')
+parser.add_argument('--binning-method', choices=['adaptive1', 'adaptive2', 'adaptive3', 'bin-width', 'n-bins'], default='n-bins', help='Whether to determine bins adaptively from coverage data, split all coding/noncoding regions into fixed-width bins, or split each region into a fixed number of bins. (default: %(default)s)')
+parser.add_argument('--bigwig-paths-file', type=Path, metavar='FILE', help='For "adaptive" methods, file containing list of paths to per-sample bigWig files to use for coverage data.')
+parser.add_argument('--min-mean-total-covg', type=float, default=128, metavar='FLOAT', help='For method "adaptive1", minimum allowed mean total coverage per sample for a bin. (default: %(default)s)')
+parser.add_argument('--max-corr', type=float, default=0.8, metavar='FLOAT', help='For method "adaptive1", maximum allowed correlation between normalized coverage of adjacent bins. (default: %(default)s)')
+parser.add_argument('--bins-per-gene', type=int, default=128, metavar='N', help='For method "adaptive2" or "adaptive3", approximate number of bins to create per gene on average. (default: %(default)s)')
 parser.add_argument('--bin-width-coding', type=int, default=16, metavar='N', help='For method "bin-width", width of bins for coding (exonic) regions of the genes. (default: %(default)s)')
 parser.add_argument('--bin-width-noncoding', type=int, default=128, metavar='N', help='For method "bin-width", width of bins for noncoding (non-exonic) regions of the genes. (default: %(default)s)')
 parser.add_argument('--n-bins', type=int, default=24, metavar='N', help='For method "n-bins", number of bins to split each feature (exon, intron, etc.) into. (default: %(default)s)')
+parser.add_argument('--max-bin-width', type=int, default=1024, metavar='N', help='After a binning method is run, any bins larger than this will be split up. (default: %(default)s)')
 parser.add_argument('--batch-size', type=int, default=200, metavar='N', help='Number of genes (at most) per batch. (default: %(default)s)')
 parser.add_argument('--batch', type=int, metavar='N', help='Batch ID to process. Batch IDs are integers starting from 0. If omitted, all batches will be processed.')
 args = parser.parse_args()
@@ -446,20 +566,35 @@ for i, gene_id in enumerate(genes.index):
 anno['batch'] = [gene_batch[gene_id] for gene_id in anno['gene_id']]
 genes['batch'] = [gene_batch[gene_id] for gene_id in genes.index]
 anno = anno.groupby('batch')
-genes = genes.groupby('batch')
 
-if args.binning_method in ['adaptive1', 'adaptive2']:
+if args.binning_method in ['adaptive1', 'adaptive2', 'adaptive3']:
     assert args.bigwig_paths_file is not None, 'For adaptive binning, must provide --bigwig-paths-file'
     with open(args.bigwig_paths_file) as f:
         bigwig_paths = f.read().splitlines()
+
+if args.binning_method == 'adaptive2':
+    var_per_gene = estimate_var_sum_per_gene(genes, bigwig_paths)
+    var_per_bin = var_per_gene / args.bins_per_gene
+elif args.binning_method == 'adaptive3':
+    var_per_gene = estimate_var_sum_per_gene(genes, bigwig_paths, covg_diff=True)
+    var_per_bin = var_per_gene / args.bins_per_gene
 
 args.outdir.mkdir(exist_ok=True)
 genes_removed = 0
 batches = range(n_batches) if args.batch is None else [args.batch]
 for batch_id in batches:
-    batch_genes = genes.get_group(batch_id)
+    batch_genes = genes.groupby('batch').get_group(batch_id)
     if args.binning_method == 'adaptive1':
         batch_bins = get_adaptive_bins_batch(batch_genes, bigwig_paths, args.min_mean_total_covg, args.max_corr)
+        batch_bins = split_large_bins(batch_bins, args.max_bin_width)
+        batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
+    elif args.binning_method == 'adaptive2':
+        batch_bins = get_adaptive_bins_var_batch(batch_genes, bigwig_paths, var_per_bin)
+        batch_bins = split_large_bins(batch_bins, args.max_bin_width)
+        batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
+    elif args.binning_method == 'adaptive3':
+        batch_bins = get_adaptive_bins_var_batch(batch_genes, bigwig_paths, var_per_bin, covg_diff=True)
+        batch_bins = split_large_bins(batch_bins, args.max_bin_width)
         batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
     else:
         batch_anno = anno.get_group(batch_id)
@@ -474,6 +609,7 @@ for batch_id in batches:
             batch_bins = split_regions_bin_width(batch_anno, args.bin_width_coding, args.bin_width_noncoding)
         else:
             batch_bins = split_regions_n_bins(batch_anno, args.n_bins)
+        batch_bins = split_large_bins(batch_bins, args.max_bin_width)
         batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
 
         # Remove any genes with no exon regions remaining:
