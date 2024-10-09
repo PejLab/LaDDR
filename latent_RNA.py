@@ -43,6 +43,9 @@ class CoverageData:
             norm_covg_dirs: List of directories containing normalized coverage
               data.
             batch_id: ID of the batch to load.
+
+        Returns:
+            Tuple of coverage DataFrame and bins DataFrame.
         """
         mats = [np.load(d / f'batch_{batch_id}.npy') for d in norm_covg_dirs]
         mat = np.concatenate(mats, axis=1)
@@ -84,7 +87,7 @@ class Model:
         """Fit functional PCA model to normalized coverage for one gene
         
         Saves enough PCs to explain var_expl variance or n_pcs_max, whichever
-        is smaller.
+        is fewer.
 
         Args:
             df: The input DataFrame containing normalized coverage per bin per
@@ -103,6 +106,8 @@ class Model:
                 fd = FDataGrid(x, grid_points=df.index.get_level_values('pos'))
             # FPCA currently defaults to n_components=3, so we need to set it explicitly:
             # (There's no option for variance explained cutoff, so we'll subset the PCs later.)
+            if n_pcs_max == 0:
+                n_pcs_max = x.shape[0]
             n_comp = min(n_pcs_max, x.shape[0], n_bins_with_var)
             if n_comp == 0:
                 return
@@ -118,7 +123,8 @@ class Model:
             except Exception as e:
                 print(f"Error occurred during model fitting: {e}", flush=True)
                 return
-            subset_pcs_fpca(model, var_expl, self.fpca_basis)
+            if var_expl not in {0, 1}:
+                subset_pcs_fpca(model, var_expl, self.fpca_basis)
         else:
             df = df.loc[df.std(axis=1) > 0, :]
             if df.shape[0] == 0:
@@ -309,8 +315,21 @@ def load_phenotypes(pheno_file: Path, samples: list) -> pd.DataFrame:
     df = df[samples]
     return df
 
-def regress_out_phenos_single(y: pd.Series, x: np.array, gene_id: str) -> pd.DataFrame:
-    """Regress out phenotypes from one feature (bin)"""
+def regress_out_phenos_single(y: pd.Series, x: np.array) -> pd.DataFrame:
+    """Regress out phenotypes from one feature (bin)
+
+    Run regression in two stages:
+    1. Identify nominally significant regression features (p < 0.01) using all
+      phenotypes.
+    2. Run regression using only the nominally significant features.
+    
+    Args:
+        y: The input Series containing coverage values for one bin.
+        x: The input array containing phenotypes for the gene.
+
+    Returns:
+        The residuals of the regression.
+    """
     # Subset to nominally significant regression features
     x_const = sm.add_constant(x)
     model_all = sm.OLS(y, x_const).fit()
@@ -323,14 +342,33 @@ def regress_out_phenos_single(y: pd.Series, x: np.array, gene_id: str) -> pd.Dat
     return pd.Series(resid, index=y.index)
 
 def regress_out_phenos_gene(df: pd.DataFrame, phenos: pd.core.groupby.DataFrameGroupBy, gene_id: str) -> pd.DataFrame:
-    """Regress out phenotypes per gene"""
+    """Regress out phenotypes per gene
+    
+    Args:
+        df: The input DataFrame containing normalized coverage per bin per
+          sample for one gene.
+        phenos: The input DataFrameGroupBy containing phenotypes to regress out.
+        gene_id: The gene ID to process.
+
+    Returns:
+        The DataFrame of residuals after regressing out phenotypes.
+    """
     if gene_id in phenos.groups:
         x = phenos.get_group(gene_id).to_numpy().T
-        df = df.apply(regress_out_phenos_single, axis=1, args=(x, gene_id)) # axis=1 means by row, i.e. index of Series is column names
+        df = df.apply(regress_out_phenos_single, axis=1, args=(x,)) # axis=1 means by row, i.e. index of Series is column names
     return df
 
-def regress_out_phenos(covg: pd.DataFrame, pheno_files: Path) -> pd.DataFrame:
-    """Regress out phenotypes from coverage data"""
+def regress_out_phenos(covg: pd.DataFrame, pheno_files: list) -> pd.DataFrame:
+    """Regress out phenotypes from coverage data
+    
+    Args:
+        covg: The input DataFrame containing normalized coverage per bin per
+          sample for one gene.
+        pheno_files: List of paths to phenotype tables.
+
+    Returns:
+        The DataFrame of residuals after regressing out phenotypes.
+    """
     print(f'Loading phenotypes from {len(pheno_files)} file{"" if len(pheno_files) == 1 else "s"} to regress out...', flush=True)
     phenos = [load_phenotypes(f, covg.columns).reset_index() for f in pheno_files]
     phenos = pd.concat(phenos, axis=0)
@@ -347,7 +385,21 @@ def regress_out_phenos(covg: pd.DataFrame, pheno_files: Path) -> pd.DataFrame:
     return covg
 
 def prepare(bigwig_paths_file: Path, bins_dir: Path, batches: list, pheno_files: list, outdir: Path):
-    """Assemble per-sample coverage, split into batches, and save to numpy binary files"""
+    """Assemble per-sample coverage, split into batches, and save to numpy binary files
+    
+    Args:
+        bigwig_paths_file: Path to a file containing paths to bigWig files.
+          Sample IDs will be extracted from the basenames of the files.
+        bins_dir: Directory of per-batch BED files containing bin regions. Must
+          have start, end and bin ID in 2nd, 3rd, and 4th columns. Rows must
+          correspond to rows of corresponding input coverage file.
+        batches: List of batch IDs to process. Batch IDs are integers starting
+          from 0.
+        pheno_files: List of paths to phenotype tables to regress out of the
+          coverage data per gene prior to model input.
+        outdir: Directory where per-batch numpy binary files with normalized
+          coverage will be written.
+    """
     for batch in batches:
         print(f'=== Preparing coverage for batch {batch} ===', flush=True)
         binfile = bins_dir / f'batch_{batch}.bed.gz'
@@ -371,7 +423,15 @@ def prepare(bigwig_paths_file: Path, bins_dir: Path, batches: list, pheno_files:
         print(f'Coverage saved in {outdir}', flush=True)
 
 def subset_pcs_fpca(fpca: FPCA, var_expl: float, fpca_basis: str):
-    """Subset the FPCA model using variance explained cutoff"""
+    """Subset the FPCA model using variance explained cutoff
+    
+    Args:
+        fpca: The input FPCA model.
+        var_expl: Maximum variance explained by the PCs kept per gene.
+        fpca_basis: Basis function to use for functional PCA. Options are
+          'discrete' for discretized FPCA directly on the data, and 'spline'
+          for a 4th-order B-spline basis.
+    """
     # Find the number of PCs needed to explain var_expl variance:
     n_pcs_max = np.argmax(np.cumsum(fpca.explained_variance_ratio_) >= var_expl) + 1
     if fpca_basis == 'discrete':
@@ -387,7 +447,12 @@ def subset_pcs_fpca(fpca: FPCA, var_expl: float, fpca_basis: str):
     fpca.singular_values_ = fpca.singular_values_[:n_pcs_max]
 
 def subset_pcs_pca(pca: PCA, n_pcs_max: int):
-    """Subset the PCA model to n_pcs_max PCs to reduce file size"""
+    """Subset the PCA model to n_pcs_max PCs to reduce file size
+    
+    Args:
+        pca: The input PCA model.
+        n_pcs_max: Maximum number of PCs to keep per gene. Pass 0 for no cutoff.
+    """
     if n_pcs_max != 0 and n_pcs_max < pca.n_components_:
         pca.components_ = pca.components_[:n_pcs_max, :]
         pca.n_components_ = n_pcs_max
@@ -396,8 +461,27 @@ def subset_pcs_pca(pca: PCA, n_pcs_max: int):
         pca.singular_values_ = pca.singular_values_[:n_pcs_max]
         pca.noise_variance_ = None # Could compute if necessary, but omitting otherwise
 
-def fit_batch(norm_covg_dirs: list, batch: int, var_expl_max: float, n_pcs_max: int, fpca: bool = True, fpca_x_values: str = 'bin', fpca_basis: str = 'discrete') -> dict:
-    """Fit functional PCA models for all genes in a batch"""
+def fit_batch(norm_covg_dirs: list, batch: int, var_expl_max: float, n_pcs_max: int, fpca: bool = False, fpca_x_values: str = 'bin', fpca_basis: str = 'discrete') -> dict:
+    """Fit functional PCA models for all genes in a batch
+    
+    Args:
+        norm_covg_dirs: List of directories containing normalized coverage data.
+        batch: ID of the batch to fit.
+        var_expl_max: Maximum variance explained by the PCs kept per gene. Pass
+          0 or 1 for no variance explained cutoff.
+        n_pcs_max: Maximum number of PCs to keep per gene. Pass 0 for no cutoff.
+        fpca: Whether to fit a functional PCA model instead of regular PCA.
+        fpca_x_values: Whether to use bin numbers or genomic positions as
+          x-values for functional PCA. Options are 'bin' and 'pos'.
+        fpca_basis: Basis function to use for functional PCA. Options are
+          'discrete' for discretized FPCA directly on the data, and 'spline' for
+          a 4th-order B-spline basis.
+
+    Returns:
+        Dictionary of fitted models, with keys 'var_expl_max', 'n_pcs_max', and
+        'models'. The 'models' key contains a dictionary with gene IDs as keys
+        and Model objects as values.
+    """
     covg = CoverageData(norm_covg_dirs, batch)
     models = {'var_expl_max': var_expl_max, 'n_pcs_max': n_pcs_max, 'models': {}}
     for gene_id, x in tqdm(covg.by_gene(), total=len(covg.genes), desc="Fitting models"):
@@ -407,8 +491,23 @@ def fit_batch(norm_covg_dirs: list, batch: int, var_expl_max: float, n_pcs_max: 
             models['models'][gene_id] = model
     return models
 
-def fit(norm_covg_dirs: list, batches: list, var_expl_max: float, n_pcs_max: int, output_dir: Path, fpca: bool = True, fpca_x_values: str = 'bin', fpca_basis: str = 'discrete'):
-    """Fit functional PCA models for all genes in one or more batches"""
+def fit(norm_covg_dirs: list, batches: list, var_expl_max: float, n_pcs_max: int, output_dir: Path, fpca: bool = False, fpca_x_values: str = 'bin', fpca_basis: str = 'discrete'):
+    """Fit functional PCA models for all genes in one or more batches
+    
+    Args:
+        norm_covg_dirs: List of directories containing normalized coverage data.
+        batches: List of batch IDs to fit.
+        var_expl_max: Maximum variance explained by the PCs kept per gene. Pass
+          0 or 1 for no variance explained cutoff.
+        n_pcs_max: Maximum number of PCs to keep per gene. Pass 0 for no cutoff.
+        output_dir: Directory in which to save model pickle files.
+        fpca: Whether to fit a functional PCA model instead of regular PCA.
+        fpca_x_values: Whether to use bin numbers or genomic positions as
+          x-values for functional PCA. Options are 'bin' and 'pos'.
+        fpca_basis: Basis function to use for functional PCA. Options are
+          'discrete' for discretized FPCA directly on the data, and 'spline' for
+          a 4th-order B-spline basis.
+    """
     output_dir.mkdir(exist_ok=True)
     for batch in batches:
         print(f'=== Fitting models for batch {batch} ===', flush=True)
@@ -419,7 +518,18 @@ def fit(norm_covg_dirs: list, batches: list, var_expl_max: float, n_pcs_max: int
         print(f'Models saved to {outfile}', flush=True)
 
 def transform_batch(norm_covg_dir: Path, batch: int, models_dir: dict) -> Iterator[pd.DataFrame]:
-    """Apply functional PCA transformation to all genes in a batch"""
+    """Apply functional PCA transformation to all genes in a batch
+    
+    Args:
+        norm_covg_dir: Directory of per-batch numpy binary files with normalized
+          coverage.
+        batch: ID of the batch to transform.
+        models_dir: Directory of saved models to load and use for transformation.
+
+    Yields:
+        DataFrame of transformed data for one gene, with gene ID and PC number
+        as index levels and sample IDs as columns.
+    """
     covg = CoverageData([norm_covg_dir], batch)
     print('  Loading models...', flush=True)
     models_file = models_dir / f'models_batch_{batch}.pickle'
@@ -430,7 +540,15 @@ def transform_batch(norm_covg_dir: Path, batch: int, models_dir: dict) -> Iterat
             yield models['models'][gene_id].transform(x)
 
 def transform(norm_covg_dir: Path, models_dir: dict, n_batches: int) -> pd.DataFrame:
-    """Apply functional PCA transformation to all genes"""
+    """Apply functional PCA transformation to all genes
+    
+    Args:
+        norm_covg_dir: Directory of per-batch numpy binary files with normalized
+          coverage.
+        models_dir: Directory of saved models to load and use for transformation.
+        n_batches: Number of batches in the data. Latent phenotypes from all
+          batches will be computed and concatenated.
+    """
     out = []
     for batch in range(n_batches):
         print(f'Transforming batch {batch}', flush=True)
@@ -466,9 +584,9 @@ def create_parser():
     parser_fit.add_argument('-m', '--models-dir', type=Path, metavar='DIR', required=True, help='Directory in which to save model pickle files.')
     parser_fit.add_argument('-v', '--var-expl-max', type=float, default=0.8, metavar='FLOAT', help='Max variance explained by the PCs kept per gene. Pass 0 or 1 for no variance explained cutoff.  (default: %(default)s)')
     parser_fit.add_argument('-n', '--n-pcs-max', type=int, default=16, metavar='N', help='Max number of PCs to keep per gene. Pass 0 for no cutoff. (default: %(default)s)')
+    parser_fit.add_argument('--use-fpca', action='store_true', help='Use functional PCA instead of regular PCA.')
     parser_fit.add_argument('--fpca-x-values', type=str, choices=['bin', 'pos'], default='bin', metavar='STRING', help='Whether to use bin numbers or genomic positions as x-values for functional PCA. (default: %(default)s)')
     parser_fit.add_argument('--fpca-basis', type=str, choices=['discrete', 'spline'], default='discrete', metavar='STRING', help='Basis function to use for functional PCA. `discrete` will run discretized FPCA directly on the data, `spline` will use a 4th-order B-spline basis. (default: %(default)s)')
-    parser_fit.add_argument('--regular-pca', action='store_true', help='Use regular PCA instead of functional PCA.')
 
     # Subparser for 'transform'
     parser_transform = subparsers.add_parser('transform', help='Apply fitted models to coverage data')
@@ -499,7 +617,7 @@ if __name__ == '__main__':
             with open(args.norm_covg_dir_file) as f:
                 norm_covg_dirs = [Path(l.strip()) for l in f]
         batches = [args.batch] if args.batch is not None else list(range(args.n_batches))
-        fit(norm_covg_dirs, batches, args.var_expl_max, args.n_pcs_max, args.models_dir, not args.regular_pca, args.fpca_x_values, args.fpca_basis)
+        fit(norm_covg_dirs, batches, args.var_expl_max, args.n_pcs_max, args.models_dir, args.use_fpca, args.fpca_x_values, args.fpca_basis)
     elif args.subcommand == 'transform':
         print('=== Generating latent phenotypes ===', flush=True)
         output = transform(args.norm_covg_dir, args.models_dir, args.n_batches)

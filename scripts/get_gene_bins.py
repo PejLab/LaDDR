@@ -516,7 +516,7 @@ def save_bed(bins: pd.DataFrame, chromosomes: list, genes: pd.DataFrame, outfile
     bins = bins.sort_values(by=['seqname', 'start'])
     bins.to_csv(outfile, sep='\t', index=False, header=False)
 
-parser = argparse.ArgumentParser(description='Get gene feature bins from GTF file')
+parser = argparse.ArgumentParser(description='Partition genes into bins for summarizing coverage data')
 parser.add_argument('-g', '--gtf', type=Path, required=True, metavar='FILE', help='Transcript annotation in GTF format. Must be the collapsed annotation produced by `collapse_annotation.py`.')
 parser.add_argument('-c', '--chromosomes', type=Path, required=True, metavar='FILE', help='Chromosome lengths file, e.g. chrNameLength.txt from STAR index, to sort chromosomes.')
 parser.add_argument('--outdir', type=Path, required=True, metavar='PATH', help='Directory in which to save per-batch BED files.')
