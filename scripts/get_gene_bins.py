@@ -575,7 +575,7 @@ elif args.binning_method == 'adaptive3':
     var_per_bin = var_per_gene / args.bins_per_gene
 
 args.outdir.mkdir(exist_ok=True)
-genes['kept'] = False
+genes_removed = 0
 batches = range(n_batches) if args.batch is None else [args.batch]
 for batch_id in batches:
     batch_genes = genes.groupby('batch').get_group(batch_id)
@@ -608,13 +608,15 @@ for batch_id in batches:
         batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
 
         # Remove any genes with no exon regions remaining:
+        n_genes_before = batch_bins['gene_id'].nunique()
         batch_bins = batch_bins.groupby('gene_id').filter(lambda x: 'exon' in x['feature'].values)
-    genes.loc[batch_genes.index, 'kept'] = True
+        genes_removed += n_genes_before - batch_bins['gene_id'].nunique()
     outfile = args.outdir / f'batch_{batch_id}.bed.gz'
     save_bed(batch_bins, chromosomes, batch_genes, outfile)
     print(f'Saved batch {batch_id} to {outfile}')
+if genes_removed > 0:
+    print(f'Removed {genes_removed} genes with no unique exonic regions')
 
-if not genes['kept'].all():
-    print(f'Removed {genes.shape[0] - genes["kept"].sum()} genes.')
+# If batches are run separately, this file will be saved each time.
 genes.drop(columns='tss', inplace=True)
 genes.to_csv(args.outdir / 'genes.tsv', sep='\t', index=True)
