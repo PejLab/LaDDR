@@ -227,8 +227,9 @@ def covg_from_bigwigs(bigwig_paths_file: Path, bins: pd.DataFrame) -> pd.DataFra
     Args:
         bigwig_paths_file: Path to a file containing paths to bigWig files.
           Sample IDs will be extracted from the basenames of the files.
-        bins: DataFrame containing bin information. Rows are bins and columns
-          are gene_id and pos.
+        bins: DataFrame containing bin information. Rows are bins, indexed by
+          gene_id and pos, and columns include chrom, chrom_start, and
+          chrom_end.
 
     Returns:
         The coverage DataFrame. Rows are bins and columns are sample IDs.
@@ -564,7 +565,7 @@ def create_parser():
     # Subparser for 'prepare'
     parser_prepare = subparsers.add_parser('prepare', help='Prepare RNA-seq coverage for a batch of genes')
     parser_prepare.add_argument('-i', '--bigwig-paths-file', type=Path, metavar='FILE', required=True, help='File containing list of paths to per-sample bigWig files. Basenames of files will be used as sample IDs.')
-    parser_prepare.add_argument('--bins-dir', type=Path, metavar='DIR', required=True, help='Directory of per-batch BED files containing bin regions. Must have start, end and bin ID in 2nd, 3rd, and 4th columns. Rows must correspond to rows of corresponding input coverage file.')
+    parser_prepare.add_argument('--bins-dir', type=Path, metavar='DIR', required=True, help='Directory of per-batch BED files containing bin regions.')
     parser_prepare_batch = parser_prepare.add_mutually_exclusive_group(required=True)
     parser_prepare_batch.add_argument('-b', '--batch', type=int, metavar='N', help='Batch ID to process. Batch IDs are integers starting from 0.')
     parser_prepare_batch.add_argument('--n-batches', type=int, metavar='N', help='To load and fit all batches in sequence, provide number of batches instead of a specific batch.')

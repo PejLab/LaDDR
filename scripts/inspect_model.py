@@ -5,19 +5,39 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import pickle
+import pyBigWig
 
 class Model:
     pass
 
-def load_coverage(batch_covg_dir: Path, batch_id: str) -> pd.DataFrame:
-    mat = np.load(batch_covg_dir / f'covg_{batch_id}.npy')
-    region_file = batch_covg_dir / f'covg_{batch_id}.regions.tsv.gz'
-    regions = pd.read_csv(region_file, sep='\t', index_col=[0, 1])
-    with open(batch_covg_dir / 'samples.txt', 'r') as f:
-        samples = f.read().splitlines()
-    assert mat.shape[0] == regions.shape[0]
-    assert mat.shape[1] == len(samples)
-    df = pd.DataFrame(mat, index=regions.index, columns=samples)
+def load_coverage(bigwig_paths_file: Path, bins: pd.DataFrame) -> pd.DataFrame:
+    """Load coverage data from bigWig files
+    
+    Args:
+        bigwig_paths_file: Path to a file containing paths to bigWig files.
+          Sample IDs will be extracted from the basenames of the files.
+        bins: DataFrame containing bin information. Rows are bins, indexed by
+          gene_id and pos, and columns include chrom, chrom_start, and
+          chrom_end.
+
+    Returns:
+        The coverage DataFrame. Rows are bins and columns are sample IDs.
+    """
+    with open(bigwig_paths_file) as f:
+        bigwig_paths = [Path(l.strip()) for l in f]
+    covg = np.zeros((bins.shape[0], len(bigwig_paths)))
+    for i, bw in enumerate(bigwig_paths):
+        with pyBigWig.open(str(bw)) as f:
+            for j, (gene_id, pos) in enumerate(bins.index):
+                chrom = str(bins.loc[(gene_id, pos), 'chrom'])
+                start = bins.loc[(gene_id, pos), 'chrom_start']
+                end = bins.loc[(gene_id, pos), 'chrom_end']
+                try:
+                    covg[j, i] = f.stats(chrom, start, end, type='mean', exact=True)[0]
+                except RuntimeError as e:
+                    print(f"RuntimeError for {gene_id}, {chrom}:{start}-{end} in file {bw.stem}: {e}", flush=True)
+    samples = [bw.stem for bw in bigwig_paths]
+    df = pd.DataFrame(covg, index=bins.index, columns=samples)
     return df
 
 def load_phenos(phenotypes: Path, gene_id: str) -> pd.DataFrame:
@@ -30,17 +50,22 @@ def load_phenos(phenotypes: Path, gene_id: str) -> pd.DataFrame:
 
 parser = argparse.ArgumentParser(description='Extract loadings from a PCA/fPCA model.')
 parser.add_argument('-g', '--gene-id', type=str, metavar='ID', required=True, help='Gene ID to extract.')
-parser.add_argument('-b', '--batch', type=str, metavar='ID', required=True, help='Batch ID containing the gene.')
-parser.add_argument('-c', '--batch-covg-dir', type=Path, metavar='DIR', required=True, help='Directory of per-batch numpy binary files.')
-parser.add_argument('-m', '--models-dir', type=Path, metavar='DIR', required=True, help='Directory of saved models (*.pickle).')
-parser.add_argument('-p', '--phenotypes', type=Path, metavar='FILE', required=True, help='Latent phenotype table (TSV). Used to find the top and bottom tenth of samples per PC to get their mean coverage.')
+parser.add_argument('--bigwig-paths-file', type=Path, metavar='FILE', required=True, help='File containing list of paths to per-sample bigWig files. Basenames of files will be used as sample IDs.')
+parser.add_argument('--bins-dir', type=Path, metavar='DIR', required=True, help='Directory of per-batch BED files containing bin regions. Gene batch ID will be retrieved from genes.tsv in this directory.')
+parser.add_argument('--norm-covg-dir', type=Path, metavar='DIR', help='Directory of per-batch numpy binary files with normalized coverage. Normalized coverage is not used here, but the accompanying bin info files are used to extract coverage from bigWig files.')
+parser.add_argument('--models-dir', type=Path, metavar='DIR', required=True, help='Directory of saved models (*.pickle).')
+parser.add_argument('--phenotypes', type=Path, metavar='FILE', required=True, help='Latent phenotype table (TSV). Used to find the top and bottom tenth of samples per PC to get their mean coverage.')
 parser.add_argument('-o', '--output', type=Path, metavar='FILE', required=True, help='Output file (TSV).')
 args = parser.parse_args()
 
 gene_id = args.gene_id
-covg = load_coverage(args.batch_covg_dir, args.batch)
+genes = pd.read_csv(args.bins_dir / 'genes.tsv', sep='\t', index_col=0)
+batch = genes.loc[gene_id, 'batch']
+bins = pd.read_csv(args.norm_covg_dir / f'batch_{batch}.bins.tsv.gz', sep='\t', index_col=[0, 1])
+bins = bins.loc[bins.index.get_level_values('gene_id') == gene_id]
+covg = load_coverage(args.bigwig_paths_file, bins)
 covg = covg.loc[covg.index.get_level_values('gene_id') == gene_id]
-models_file = args.models_dir / f'models_{args.batch}.pickle'
+models_file = args.models_dir / f'models_batch_{batch}.pickle'
 models = pickle.load(open(models_file, 'rb'))
 model = models['models'][gene_id]
 
@@ -81,4 +106,4 @@ else:
         info[f'top_tenth_{pc}'] = top_mean
         info[f'bottom_tenth_{pc}'] = bottom_mean
 
-    info.to_csv(args.output, sep='\t')
+    info.to_csv(args.output, sep='\t', float_format='%g')

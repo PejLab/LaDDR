@@ -119,3 +119,16 @@ done
 cat data_input/datasets.txt | while read dset; do
     python $script transform -d data_bash_script/ex5/covg_norm_${dset}/ -m data_bash_script/ex5/models/ --n-batches 3 -o data_bash_script/ex5/latent_phenos.${dset}.tsv.gz
 done
+
+###########################
+## Get stats for a model ##
+###########################
+
+python ../scripts/inspect_model.py \
+    --gene-id ENSG00000008128 \
+    --bigwig-paths-file data_bash_script/covg_bigwig_files.txt \
+    --bins-dir data_bash_script/gene_bins/ \
+    --norm-covg-dir data_bash_script/ex1/covg_norm/ \
+    --models-dir data_bash_script/ex1/models/ \
+    --phenotypes data_bash_script/ex1/latent_phenos.tsv.gz \
+    --output data_bash_script/ex1/inspect.ENSG00000008128.tsv
