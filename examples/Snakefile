@@ -82,7 +82,7 @@ rule get_gene_bins:
     shell:
         """
         printf '%s\\n' {input.bw} > {params.bw_file_list}
-        python ../scripts/get_gene_bins.py \
+        latent-rna binning \
             --gtf {input.gtf} \
             --chromosomes {input.chrom} \
             --binning-method adaptive3 \
@@ -110,7 +110,7 @@ rule prepare_coverage:
         """
         mkdir -p {params.covg_norm_dir}
         printf '%s\\n' {input.bw} > {params.bw_file_list}
-        python ../latent_RNA.py prepare \
+        latent-rna prepare \
             --bigwig-paths-file {params.bw_file_list} \
             --bins-dir {params.bins_dir} \
             --batch {wildcards.batch} \
@@ -135,7 +135,7 @@ rule fit_models:
         """
         mkdir -p {params.models_dir}
         printf '%s\\n' {params.covg_norm_dirs} > {params.covg_norm_dirs_file}
-        python ../latent_RNA.py fit \
+        latent-rna fit \
             --norm-covg-dir-file {params.covg_norm_dirs_file} \
             --batch {wildcards.batch} \
             --models-dir {params.models_dir} \
@@ -156,7 +156,7 @@ rule get_latent_phenotypes:
         n_batches = N_BATCHES,
     shell:
         """
-        python ../latent_RNA.py transform \
+        latent-rna transform \
             --norm-covg-dir {params.covg_norm_dir} \
             --models-dir {params.models_dir} \
             --n-batches {params.n_batches} \

@@ -1,8 +1,9 @@
-bx_python==0.10.0
-gtfparse==1.3.0
-numpy==1.25.1
-pandas==2.0.3
+bx_python==0.13.0
+gtfparse==2.5.0
+numpy==1.26.4
+pandas==2.2.3
+pyBigWig==0.3.23
 scikit_fda==0.9.1
-scikit_learn==1.3.0
-statsmodels==0.14.2
-tqdm==4.66.1
+scikit_learn==1.5.2
+statsmodels==0.14.4
+tqdm==4.67.0

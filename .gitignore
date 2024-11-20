@@ -1,3 +1,6 @@
 *.DS_Store
+.venv
+__pycache__
+src/latent_rna.egg-info
 examples/data_*
 examples/.snakemake

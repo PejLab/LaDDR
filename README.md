@@ -1,6 +1,13 @@
 # latent-rna
  Extract latent transcriptomic phenotypes
 
+## Installation
+
+```shell
+cd latent-rna
+pip install -e .
+```
+
 ## Usage
 
 This method involves four main steps as outlined below. If using existing genomic bin definitions, only steps 2-4 are required. If also using pretrained latent phenotyping models, only steps 2 and 4 are required. `examples/` contains a bash script with examples of running these steps in different scenarios. It also contains a `Snakefile` that can be modified as needed and used to run the steps in a [Snakemake](https://snakemake.readthedocs.io/en/stable/) workflow. We recommend using Snakemake and adapting this `Snakefile` for your project.
@@ -28,7 +35,7 @@ gzip Homo_sapiens.GRCh38.106.genes.gtf
 Then, split exons, introns, upstream, and downstream regions into bins:
 
 ```shell
-python scripts/get_gene_bins.py \
+latent-rna binning \
     --gtf Homo_sapiens.GRCh38.106.genes.gtf.gz \
     --chromosomes chr_lengths.genome \
     --outdir gene_bins/
@@ -41,7 +48,7 @@ This step also filters genes to include only those with `gene_biotype`/`gene_typ
 The above binning method relies on exon definitions in the GTF file. Binning can also be determined using coverage data, partitioning each gene in a way that aims to define more, smaller bins in areas of greater variation across samples:
 
 ```shell
-python scripts/get_gene_bins.py \
+latent-rna binning \
     --gtf Homo_sapiens.GRCh38.106.genes.gtf.gz \
     --chromosomes chr_lengths.genome \
     --binning-method adaptive3 \
@@ -53,15 +60,13 @@ python scripts/get_gene_bins.py \
 #### Command line options
 
 ```
-usage: get_gene_bins.py [-h] -g FILE -c FILE --outdir PATH
-                        [--binning-method {adaptive1,adaptive2,adaptive3,bin-width,n-bins}]
-                        [--bigwig-paths-file FILE]
-                        [--min-mean-total-covg FLOAT] [--max-corr FLOAT]
-                        [--bins-per-gene N] [--bin-width-coding N]
-                        [--bin-width-noncoding N] [--n-bins N]
-                        [--max-bin-width N] [--batch-size N] [--batch N]
-
-Partition genes into bins for summarizing coverage data
+usage: latent-rna binning [-h] -g FILE -c FILE --outdir PATH
+                          [--binning-method {adaptive1,adaptive2,adaptive3,bin-width,n-bins}]
+                          [--bigwig-paths-file FILE]
+                          [--min-mean-total-covg FLOAT] [--max-corr FLOAT]
+                          [--bins-per-gene N] [--bin-width-coding N]
+                          [--bin-width-noncoding N] [--n-bins N]
+                          [--max-bin-width N] [--batch-size N] [--batch N]
 
 options:
   -h, --help            show this help message and exit
@@ -109,7 +114,11 @@ options:
 For each gene batch, use its bin definitions to get mean coverage per bin for all samples and normalize:
 
 ```shell
-python latent_RNA.py prepare -i covg_bigwig_files.txt --bins-dir gene_bins/ -b 0 -o covg_norm/
+latent-rna prepare \
+    --bigwig-paths-file covg_bigwig_files.txt \
+    --bins-dir gene_bins/ \
+    --batch 0 \
+    --output-dir covg_norm/
 ```
 
 At this stage you can also provide quantified explicit phenotypes, e.g. from [Pantry](https://github.com/PejLab/Pantry), to regress out. Training and applying models on this residualized coverage data results in "residual" latent RNA phenotypes, which can complement the explicit phenotypes by representing uncharacterized transcriptomic variation.
@@ -117,9 +126,9 @@ At this stage you can also provide quantified explicit phenotypes, e.g. from [Pa
 #### Command line options
 
 ```
-usage: latent_RNA.py prepare [-h] -i FILE --bins-dir DIR
-                             (-b N | --n-batches N) [-p FILE [FILE ...] |
-                             --pheno-paths-file FILE] -o DIR
+usage: latent-rna prepare [-h] -i FILE --bins-dir DIR (-b N | --n-batches N)
+                          [-p FILE [FILE ...] | --pheno-paths-file FILE] -o
+                          DIR
 
 options:
   -h, --help            show this help message and exit
@@ -127,9 +136,7 @@ options:
                         File containing list of paths to per-sample bigWig
                         files. Basenames of files will be used as sample IDs.
   --bins-dir DIR        Directory of per-batch BED files containing bin
-                        regions. Must have start, end and bin ID in 2nd, 3rd,
-                        and 4th columns. Rows must correspond to rows of
-                        corresponding input coverage file.
+                        regions.
   -b N, --batch N       Batch ID to process. Batch IDs are integers starting
                         from 0.
   --n-batches N         To load and fit all batches in sequence, provide
@@ -153,16 +160,16 @@ options:
 Normalized coverage data are loaded, one batch at a time, and used to fit an FPCA or PCA model for each gene. If a project involves multiple datasets, e.g. tissues, the coverage count matrices for each dataset can be loaded together, and the models will be fit on the concatenated data.
 
 ```shell
-python latent_RNA.py fit -d covg_norm/ -b 0 -m models/
+latent-rna fit --norm-covg-dir covg_norm/ --batch 0 --models-dir models/
 ```
 
 #### Command line options
 
 ```
-usage: latent_RNA.py fit [-h] (-d DIR [DIR ...] | --norm-covg-dir-file FILE)
-                         (-b N | --n-batches N) -m DIR [-v FLOAT] [-n N]
-                         [--use-fpca] [--fpca-x-values STRING]
-                         [--fpca-basis STRING]
+usage: latent-rna fit [-h] (-d DIR [DIR ...] | --norm-covg-dir-file FILE)
+                      (-b N | --n-batches N) -m DIR [-v FLOAT] [-n N]
+                      [--use-fpca] [--fpca-x-values STRING]
+                      [--fpca-basis STRING]
 
 options:
   -h, --help            show this help message and exit
@@ -203,13 +210,17 @@ options:
 Normalized coverage matrices are loaded, one batch at a time, and transformed using the fitted models. The transformed data is saved as a table of phenotypes by samples, i.e. multiple PCs per gene. If a project involves multiple datasets, the coverage count matrices for each dataset can be loaded and transformed separately using the same set of models, so that the phenotypes correspond across datasets.
 
 ```shell
-python latent_RNA.py transform -d covg_norm/ -m models/ --n-batches 3 -o latent_phenos.tsv.gz
+latent-rna transform \
+    --norm-covg-dir covg_norm/ \
+    --models-dir models/ \
+    --n-batches 3 \
+    --output latent_phenos.tsv.gz
 ```
 
 #### Command line options
 
 ```
-usage: latent_RNA.py transform [-h] -d DIR -m DIR --n-batches N -o FILE
+usage: latent-rna transform [-h] -d DIR -m DIR --n-batches N -o FILE
 
 options:
   -h, --help            show this help message and exit
