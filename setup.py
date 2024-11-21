@@ -18,9 +18,13 @@ setup(
         "numpy<2",
         "pandas",
         "pyBigWig",
-        "scikit_fda",
-        "scikit_learn",
+        "scikit-fda",
+        "scikit-learn",
         "statsmodels",
         "tqdm",
+        "PyYAML",
     ],
+    package_data={
+        "latent_rna": ["config.default.yaml"],
+    },
 )
