@@ -4,6 +4,8 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List
+import numpy as np
+import pandas as pd
 import yaml
 from .binning import binning
 from .coverage import prepare
@@ -11,14 +13,21 @@ from .init import init_project
 from .models import fit, transform
 
 @dataclass
+class CoverageConfig:
+    method: str
+    directory: Path
+    manifest: Path
+
+@dataclass
 class InputConfig:
     gtf: Path
     chromosomes: Path
-    bigwig_paths: Path
+    coverage: CoverageConfig
     pheno_paths: Optional[List[Path]] = None
 
 @dataclass 
 class AdaptiveBinningConfig:
+    max_samples: int
     bins_per_gene: int
     min_mean_total_covg: float
     max_corr: float
@@ -38,12 +47,16 @@ class BinningConfig:
     fixed_width: FixedWidthBinningConfig
 
 @dataclass
+class FPCAConfig:
+    x_values: str
+    basis: str
+
+@dataclass
 class ModelConfig:
     var_explained_max: float
     n_pcs_max: int
     use_fpca: bool
-    fpca_x_values: str = 'bin'
-    fpca_basis: str = 'discrete'
+    fpca: FPCAConfig
 
 @dataclass
 class Config:
@@ -59,7 +72,7 @@ class Config:
             input=InputConfig(
                 gtf=Path(data['input']['gtf']),
                 chromosomes=Path(data['input']['chromosomes']),
-                bigwig_paths=Path(data['input']['bigwig_paths']),
+                coverage=CoverageConfig(**data['input']['coverage']),
                 pheno_paths=[Path(p) for p in data['input']['pheno_paths']] 
                     if data['input']['pheno_paths'] else []
             ),
@@ -71,7 +84,12 @@ class Config:
                 adaptive=AdaptiveBinningConfig(**data['binning']['adaptive']),
                 fixed_width=FixedWidthBinningConfig(**data['binning']['fixed_width'])
             ),
-            model=ModelConfig(**data['model'])
+            model=ModelConfig(
+                var_explained_max=data['model']['var_explained_max'],
+                n_pcs_max=data['model']['n_pcs_max'],
+                use_fpca=data['model']['use_fpca'],
+                fpca=FPCAConfig(**data['model']['fpca'])
+            )
         )
 
 def create_parser():
@@ -87,16 +105,39 @@ def create_parser():
     parser_transform = subparsers.add_parser('transform', help='Apply fitted models to coverage data')
 
     for subparser in [parser_binning, parser_prepare, parser_fit, parser_transform]:
-        subparser.add_argument('-c', '--config', type=Path, required=True, metavar='FILE', help='Path to project configuration file.')
-        subparser.add_argument('-p', '--project-dir', type=Path, default=Path.cwd(), help='Project directory. Paths in config are relative to this. Defaults to current directory.')
+        subparser.add_argument('-c', '--config', type=Path, metavar='FILE', 
+            help='Path to project configuration file. Defaults to config.yaml in project directory.')
+        subparser.add_argument('-p', '--project-dir', type=Path, default=Path.cwd(), 
+            help='Project directory. Paths in config are relative to this. Defaults to current directory.')
 
-    for subparser in [parser_binning, parser_prepare, parser_transform]:
-        subparser.add_argument('-d', '--dataset', type=Path, metavar='FILE', help='Name of dataset to process.')
+    for subparser in [parser_prepare, parser_transform]:
+        subparser.add_argument('-d', '--dataset', type=str, metavar='NAME', help='Name of dataset to process.')
 
     for subparser in [parser_binning, parser_prepare, parser_fit]:
         subparser.add_argument('-b', '--batch', type=int, metavar='N', help='Batch ID to process. Batch IDs are integers starting from 0. If omitted, all batches will be processed.')
 
     return parser
+
+def get_sample_table(coverage_config: CoverageConfig) -> pd.DataFrame:
+    if coverage_config.method == 'directory':
+        # Get all subdirectories as datasets, excluding hidden ones
+        datasets = [d.name for d in coverage_config.directory.glob('*') 
+                   if d.is_dir() and not d.name.startswith('.')]
+        # Build table by finding all .bw files in each dataset directory
+        rows = []
+        for dataset in datasets:
+            dataset_dir = coverage_config.directory / dataset
+            for bw_file in dataset_dir.glob('*.bw'):
+                # Sample ID is filename without .bw extension
+                sample = bw_file.stem
+                rows.append({
+                    'dataset': dataset,
+                    'sample': sample,
+                    'path': str(bw_file)
+                })
+        return pd.DataFrame(rows)
+    else:
+        return pd.read_csv(coverage_config.manifest, sep='\t', names=['dataset', 'sample', 'path'])
 
 def cli():
     parser = create_parser()
@@ -104,22 +145,28 @@ def cli():
     if args.subcommand == 'init':
         init_project(args.project_dir)
         return
-    config = Config.from_yaml(args.config)
+    
+    # Look for config file in project directory if not specified
+    config_path = args.config if args.config else args.project_dir / 'config.yaml'
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found at {config_path}")
+    
+    config = Config.from_yaml(config_path)
     project_dir = args.project_dir
+    sample_table = get_sample_table(config.input.coverage)
+
     if args.subcommand == 'binning':
-        if args.dataset is not None:
-            dataset = args.dataset
-        else:
-            # Assert project_dir / covg_bigwig contains only one subdirectory and use that as dataset
-            assert len(list(project_dir.glob('covg_bigwig/*'))) == 1, 'If dataset is omitted, there should be exactly one subdirectory in project_dir/covg_bigwig'
-            dataset = next(project_dir.glob('covg_bigwig/*')).name
+        # Use coverage from all datasets, subsample if necessary
+        bigwig_paths = sample_table['path'].tolist()
+        if config.binning.adaptive.max_samples and len(bigwig_paths) > config.binning.adaptive.max_samples:
+            bigwig_paths = np.random.choice(bigwig_paths, config.binning.adaptive.max_samples, replace=False)
         binning(
             gtf=project_dir / config.input.gtf,
             chromosomes=project_dir / config.input.chromosomes,
-            outdir=project_dir / 'gene_bins' / dataset,
+            outdir=project_dir / 'gene_bins',
             batch_size=config.binning.batch_size,
             binning_method=config.binning.method,
-            bigwig_paths_file=project_dir / config.input.bigwig_paths,
+            bigwig_paths=bigwig_paths,
             bins_per_gene=config.binning.adaptive.bins_per_gene,
             min_mean_total_covg=config.binning.adaptive.min_mean_total_covg,
             max_corr=config.binning.adaptive.max_corr,
@@ -129,49 +176,57 @@ def cli():
             n_bins=config.binning.n_bins,
             batch=args.batch
         )
+
     elif args.subcommand == 'prepare':
         if args.dataset is not None:
             dataset = args.dataset
         else:
-            # Assert project_dir / covg_bigwig contains only one subdirectory and use that as dataset
-            assert len(list(project_dir.glob('covg_bigwig/*'))) == 1, 'If dataset is omitted, there should be exactly one subdirectory in project_dir/covg_bigwig'
-            dataset = next(project_dir.glob('covg_bigwig/*')).name
-        batches = [args.batch] if args.batch is not None else list(range(args.n_batches))
+            datasets = sample_table['dataset'].unique().tolist()
+            assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
+            dataset = datasets[0]
+        n_batches = len(list(project_dir.glob('gene_bins/batch_*.bed.gz')))
+        batches = [args.batch] if args.batch is not None else list(range(n_batches))
+        (project_dir / 'covg_norm').mkdir(exist_ok=True)
         prepare(
-            bigwig_paths_file=project_dir / config.input.bigwig_paths,
-            bins_dir=project_dir / 'gene_bins' / dataset,
+            bigwig_manifest=sample_table,
+            bins_dir=project_dir / 'gene_bins',
             batches=batches,
             pheno_files=[project_dir / p for p in config.input.pheno_paths],
             outdir=project_dir / 'covg_norm' / dataset
         )
+
     elif args.subcommand == 'fit':
-        batches = [args.batch] if args.batch is not None else list(range(args.n_batches))
-        datasets = list(project_dir.glob('gene_bins/*'))
+        datasets = sample_table['dataset'].unique().tolist()
+        n_batches = len(list(project_dir.glob('gene_bins/batch_*.bed.gz')))
+        batches = [args.batch] if args.batch is not None else list(range(n_batches))
         fit(
-            norm_covg_dirs=[project_dir / 'covg_norm' / p for p in datasets],
+            norm_covg_dirs=[project_dir / 'covg_norm' / dataset for dataset in datasets],
             batches=batches,
             var_expl_max=config.model.var_explained_max,
             n_pcs_max=config.model.n_pcs_max,
             output_dir=project_dir / 'models',
             fpca=config.model.use_fpca,
-            fpca_x_values=config.model.fpca_x_values,
-            fpca_basis=config.model.fpca_basis
+            fpca_x_values=config.model.fpca.x_values,
+            fpca_basis=config.model.fpca.basis
         )
+
     elif args.subcommand == 'transform':
         if args.dataset is not None:
             dataset = args.dataset
         else:
-            # Assert project_dir / covg_bigwig contains only one subdirectory and use that as dataset
-            assert len(list(project_dir.glob('covg_norm/*'))) == 1, 'If dataset is omitted, there should be exactly one subdirectory in project_dir/covg_norm'
-            dataset = next(project_dir.glob('covg_norm/*')).name
+            datasets = sample_table['dataset'].unique().tolist()
+            assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
+            dataset = datasets[0]
         n_batches = len(list(project_dir.glob('models/models_batch_*.pickle')))
         print('=== Generating latent phenotypes ===', flush=True)
-        outfile = project_dir / 'phenotypes' / f'latent_phenotypes_{dataset}.tsv.gz'
+        outdir = project_dir / 'phenotypes'
+        outfile = outdir / f'latent_phenos.{dataset}.tsv.gz'
         output = transform(
             norm_covg_dir=project_dir / 'covg_norm' / dataset,
             models_dir=project_dir / 'models',
             n_batches=n_batches
         )
+        outdir.mkdir(exist_ok=True)
         output.to_csv(outfile, sep='\t', index=False, float_format='%g')
         print(f'Latent phenotypes saved to {outfile}', flush=True)
 

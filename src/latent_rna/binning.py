@@ -439,11 +439,21 @@ def remove_bins_overlapping_exon(bins: pd.DataFrame, exons: pd.DataFrame) -> pd.
     return bins
 
 def load_chromosomes(chrom_file: Path) -> pd.DataFrame:
-    """Load chromosome length and sort order info"""
+    """Load chromosome length and sort order info
+    
+    Args:
+        chrom_file: Path to a tab-delimited file with chromosome name and length
+          in first two columns, no header. Additional columns are ignored.
+
+    Returns:
+        DataFrame with columns 'chrom' and 'length' containing chromosome names
+        and lengths.
+    """
     chrom = pd.read_csv(
         chrom_file,
         sep='\t',
         header=None,
+        usecols=[0,1], # Only use first two columns
         names=['chrom', 'length'],
         dtype={'chrom': str, 'length': int}
     )
@@ -517,7 +527,7 @@ def binning(
     outdir: Path,
     batch_size: int,
     binning_method: str,
-    bigwig_paths_file: Optional[Path] = None,
+    bigwig_paths: Optional[list] = None,
     bins_per_gene: Optional[int] = None,
     min_mean_total_covg: Optional[float] = None,
     max_corr: Optional[float] = None,
@@ -562,9 +572,7 @@ def binning(
     anno = anno.groupby('batch')
 
     if binning_method in ['adaptive1', 'adaptive2', 'adaptive3']:
-        assert bigwig_paths_file is not None, 'For adaptive binning, must provide --bigwig-paths-file'
-        with open(bigwig_paths_file) as f:
-            bigwig_paths = f.read().splitlines()
+        assert bigwig_paths is not None, 'For adaptive binning, must provide --bigwig-paths'
 
     if binning_method == 'adaptive2':
         var_per_gene = estimate_var_sum_per_gene(genes, bigwig_paths)

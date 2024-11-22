@@ -11,7 +11,7 @@ input:
   # How to specify datasets and samples and locate bigWig coverage files
   coverage:
     # Method to use for locating bigWig files: directory or manifest
-    method: directory
+    method: manifest
     # If method is "directory", path of the directory whose contents will be read as {dataset}/{sample}.bw
     directory: covg_bigwig
     # If method is "manifest", path to a tab-delimited manifest file with three columns:
@@ -34,7 +34,7 @@ binning:
   # TODO describe each method in more detail
   method: n-bins
   # Number of genes (at most) per batch
-  batch_size: 200
+  batch_size: 20
   # Parameters for adaptive binning
   adaptive:
     # Maximum number of coverage samples to use for binning. Samples from all datasets are used, and a random subset is selected if there are more than this number.

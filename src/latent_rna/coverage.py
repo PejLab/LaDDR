@@ -92,12 +92,12 @@ def load_bins(binfile: Path) -> pd.DataFrame:
     bins = bins[['chrom', 'chrom_start', 'chrom_end']]
     return bins
 
-def covg_from_bigwigs(bigwig_paths_file: Path, bins: pd.DataFrame) -> pd.DataFrame:
+def covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame) -> pd.DataFrame:
     """Load coverage data from bigWig files
     
     Args:
-        bigwig_paths_file: Path to a file containing paths to bigWig files.
-          Sample IDs will be extracted from the basenames of the files.
+        bigwig_manifest: DataFrame containing bigWig manifest. Must have columns
+          sample and path.
         bins: DataFrame containing bin information. Rows are bins, indexed by
           gene_id and pos, and columns include chrom, chrom_start, and
           chrom_end.
@@ -105,11 +105,9 @@ def covg_from_bigwigs(bigwig_paths_file: Path, bins: pd.DataFrame) -> pd.DataFra
     Returns:
         The coverage DataFrame. Rows are bins and columns are sample IDs.
     """
-    with open(bigwig_paths_file) as f:
-        bigwig_paths = [Path(l.strip()) for l in f]
-    covg = np.zeros((bins.shape[0], len(bigwig_paths)))
-    for i, bw in enumerate(bigwig_paths):
-        with pyBigWig.open(str(bw)) as f:
+    covg = np.zeros((bins.shape[0], len(bigwig_manifest)))
+    for i, (_, row) in enumerate(bigwig_manifest.iterrows()):
+        with pyBigWig.open(str(row['path'])) as f:
             for j, (gene_id, pos) in enumerate(bins.index):
                 chrom = bins.loc[(gene_id, pos), 'chrom']
                 start = bins.loc[(gene_id, pos), 'chrom_start']
@@ -117,8 +115,8 @@ def covg_from_bigwigs(bigwig_paths_file: Path, bins: pd.DataFrame) -> pd.DataFra
                 try:
                     covg[j, i] = f.stats(chrom, start, end, type='mean', exact=True)[0]
                 except RuntimeError as e:
-                    print(f"RuntimeError for {gene_id}, {chrom}:{start}-{end} in file {bw.stem}: {e}", flush=True)
-    samples = [bw.stem for bw in bigwig_paths]
+                    print(f"RuntimeError for {gene_id}, {chrom}:{start}-{end} in file {row['path']}: {e}", flush=True)
+    samples = bigwig_manifest['sample'].tolist()
     df = pd.DataFrame(covg, index=bins.index, columns=samples)
     return df
 
@@ -256,12 +254,12 @@ def regress_out_phenos(covg: pd.DataFrame, pheno_files: list) -> pd.DataFrame:
     assert covg.index.equals(prev_index)
     return covg
 
-def prepare(bigwig_paths_file: Path, bins_dir: Path, batches: list, pheno_files: list, outdir: Path):
+def prepare(bigwig_manifest: pd.DataFrame, bins_dir: Path, batches: list, pheno_files: list, outdir: Path):
     """Assemble per-sample coverage, split into batches, and save to numpy binary files
     
     Args:
-        bigwig_paths_file: Path to a file containing paths to bigWig files.
-          Sample IDs will be extracted from the basenames of the files.
+        bigwig_manifest: DataFrame containing bigWig manifest. Must have columns
+          sample and path.
         bins_dir: Directory of per-batch BED files containing bin regions. Must
           have start, end and bin ID in 2nd, 3rd, and 4th columns. Rows must
           correspond to rows of corresponding input coverage file.
@@ -276,7 +274,7 @@ def prepare(bigwig_paths_file: Path, bins_dir: Path, batches: list, pheno_files:
         print(f'=== Preparing coverage for batch {batch} ===', flush=True)
         binfile = bins_dir / f'batch_{batch}.bed.gz'
         bins = load_bins(binfile)
-        covg = covg_from_bigwigs(bigwig_paths_file, bins)
+        covg = covg_from_bigwigs(bigwig_manifest, bins)
         # Sort by gene and position along gene instead of genomic coordinate
         covg = covg.sort_index()
         bins = bins.loc[covg.index, :]
