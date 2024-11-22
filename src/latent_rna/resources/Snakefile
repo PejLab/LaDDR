@@ -1,0 +1,78 @@
+from pathlib import Path
+from gtfparse import read_gtf
+import numpy as np
+import pandas as pd
+
+configfile: 'config.yaml'
+working_dir = Path('.')
+
+# Count total genes and compute number of batches needed
+genes_df = read_gtf(config['input']['gtf'], features={'gene'})
+type_col = 'gene_type' if 'gene_type' in genes_df.columns else 'gene_biotype'
+genes_df = genes_df.loc[genes_df[type_col] == 'protein_coding', :]
+n_genes = len(genes_df['gene_id'].unique())
+batch_size = config['binning']['batch_size']
+N_BATCHES = int(np.ceil(n_genes / batch_size))
+
+assert config['input']['coverage']['method'] == 'manifest'
+sample_table = pd.read_csv(config['input']['coverage']['manifest'], sep='\t', names=['dataset', 'sample', 'path'])
+datasets = sample_table['dataset'].unique().tolist()
+
+rule all:
+    input:
+        # expand(working_dir / 'gene_bins' / 'batch_{batch}.bed.gz', batch=range(N_BATCHES)),
+        # working_dir / 'covg_norm' / 'dset1' / 'batch_0.npy',
+        # working_dir / 'models' / 'models_batch_0.pickle',
+        expand(working_dir / 'phenotypes' /'latent_phenos.{dataset}.tsv.gz', dataset=datasets),
+
+rule get_gene_bins:
+    """Divide gene features into bins"""
+    input:
+        gtf = config['input']['gtf'],
+        chrom = config['input']['chromosomes'],
+        bw = sample_table['path'].tolist(),
+    output:
+        beds = expand(str(working_dir / 'gene_bins' / 'batch_{batch}.bed.gz'), batch=range(N_BATCHES)),
+        genes = working_dir / 'gene_bins' / 'genes.tsv',
+    shell:
+        """
+        latent-rna binning
+        """
+
+rule prepare_coverage:
+    """Assemble coverage across samples, normalize, regress out explicit phenotypes, and bin into batches for PCA"""
+    input:
+        bw = lambda w: sample_table.loc[sample_table['dataset'] == w.dataset, 'path'].tolist(),
+        bins = working_dir / 'gene_bins' / 'batch_{batch}.bed.gz',
+        phenos = config['input']['pheno_paths'],
+    output:
+        covg = working_dir / 'covg_norm' / '{dataset}' / 'batch_{batch}.npy',
+        bins = working_dir / 'covg_norm' / '{dataset}' / 'batch_{batch}.bins.tsv.gz',
+    shell:
+        """
+        latent-rna prepare -d {wildcards.dataset} -b {wildcards.batch}
+        """
+
+rule fit_models:
+    """Fit models to latent features"""
+    input:
+        covg_norm = expand(str(working_dir / 'covg_norm' / '{dataset}' / 'batch_{{batch}}.npy'), dataset=datasets),
+        bins = expand(str(working_dir / 'covg_norm' / '{dataset}' / 'batch_{{batch}}.bins.tsv.gz'), dataset=datasets),
+    output:
+        models = working_dir / 'models' / 'models_batch_{batch}.pickle',
+    shell:
+        """
+        latent-rna fit -b {wildcards.batch}
+        """
+
+rule get_latent_phenotypes:
+    """Apply models to generate latent phenotypes"""
+    input:
+        covg_norm = expand(str(working_dir / 'covg_norm' / '{{dataset}}' / 'batch_{batch}.npy'), batch=range(N_BATCHES)),
+        models = expand(str(working_dir / 'models' / 'models_batch_{batch}.pickle'), batch=range(N_BATCHES)),
+    output:
+        phenos = working_dir / 'phenotypes' / 'latent_phenos.{dataset}.tsv.gz',
+    shell:
+        """
+        latent-rna transform -d {wildcards.dataset}
+        """

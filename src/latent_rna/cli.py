@@ -14,81 +14,88 @@ from .models import fit, transform
 
 @dataclass
 class CoverageConfig:
-    method: str
-    directory: Path
-    manifest: Path
+    method: Optional[str] = 'manifest'
+    directory: Optional[Path] = 'covg_bigwig'
+    manifest: Optional[Path] = 'coverage_manifest.tsv'
 
 @dataclass
 class InputConfig:
-    gtf: Path
-    chromosomes: Path
-    coverage: CoverageConfig
+    gtf: Optional[Path] = None
+    chromosomes: Optional[Path] = None
+    coverage: Optional[CoverageConfig] = None
     pheno_paths: Optional[List[Path]] = None
 
 @dataclass 
 class AdaptiveBinningConfig:
-    max_samples: int
-    bins_per_gene: int
-    min_mean_total_covg: float
-    max_corr: float
+    max_samples: Optional[int] = 64
+    bins_per_gene: Optional[int] = 256
+    min_mean_total_covg: Optional[float] = 128
+    max_corr: Optional[float] = 0.8
 
 @dataclass
 class FixedWidthBinningConfig:
-    coding: int
-    noncoding: int
+    coding: Optional[int] = 16
+    noncoding: Optional[int] = 128
+
+@dataclass
+class NbinsPerRegionBinningConfig:
+    n_bins: Optional[int] = 24
 
 @dataclass
 class BinningConfig:
-    method: str
-    batch_size: int
-    max_bin_width: int
-    n_bins: int
-    adaptive: AdaptiveBinningConfig
-    fixed_width: FixedWidthBinningConfig
+    method: Optional[str] = 'adaptive3'
+    batch_size: Optional[int] = 20
+    max_bin_width: Optional[int] = 1024
+    adaptive: Optional[AdaptiveBinningConfig] = None
+    fixed_width: Optional[FixedWidthBinningConfig] = None
+    n_bins_per_region: Optional[NbinsPerRegionBinningConfig] = None
 
 @dataclass
 class FPCAConfig:
-    x_values: str
-    basis: str
+    x_values: Optional[str] = 'bin'
+    basis: Optional[str] = 'discrete'
 
 @dataclass
 class ModelConfig:
-    var_explained_max: float
-    n_pcs_max: int
-    use_fpca: bool
-    fpca: FPCAConfig
+    var_explained_max: Optional[float] = 0.8
+    n_pcs_max: Optional[int] = 16
+    use_fpca: Optional[bool] = False
+    fpca: Optional[FPCAConfig] = None
 
 @dataclass
 class Config:
-    input: InputConfig
-    binning: BinningConfig
-    model: ModelConfig
+    input: Optional[InputConfig] = None
+    binning: Optional[BinningConfig] = None
+    model: Optional[ModelConfig] = None
 
     @classmethod
     def from_yaml(cls, config_path: Path) -> 'Config':
         with open(config_path) as f:
             data = yaml.safe_load(f)
+        # Handle optional top-level configs
+        data_input = data.get('input', {})
+        data_binning = data.get('binning', {})
+        data_model = data.get('model', {})
         return cls(
             input=InputConfig(
-                gtf=Path(data['input']['gtf']),
-                chromosomes=Path(data['input']['chromosomes']),
-                coverage=CoverageConfig(**data['input']['coverage']),
-                pheno_paths=[Path(p) for p in data['input']['pheno_paths']] 
-                    if data['input']['pheno_paths'] else []
+                gtf=Path(data_input['gtf']) if 'gtf' in data_input else None,
+                chromosomes=Path(data_input['chromosomes']) if 'chromosomes' in data_input else None,
+                coverage=CoverageConfig(**data_input.get('coverage', {})),
+                pheno_paths=[Path(p) for p in data_input.get('pheno_paths', [])]
             ),
             binning=BinningConfig(
-                method=data['binning']['method'],
-                batch_size=data['binning']['batch_size'],
-                max_bin_width=data['binning']['max_bin_width'],
-                n_bins=data['binning']['n_bins'],
-                adaptive=AdaptiveBinningConfig(**data['binning']['adaptive']),
-                fixed_width=FixedWidthBinningConfig(**data['binning']['fixed_width'])
+                method=data_binning.get('method'),
+                batch_size=data_binning.get('batch_size'),
+                max_bin_width=data_binning.get('max_bin_width'),
+                adaptive=AdaptiveBinningConfig(**data_binning.get('adaptive', {})),
+                fixed_width=FixedWidthBinningConfig(**data_binning.get('fixed_width', {})),
+                n_bins_per_region=NbinsPerRegionBinningConfig(**data_binning.get('n_bins_per_region', {}))
             ),
             model=ModelConfig(
-                var_explained_max=data['model']['var_explained_max'],
-                n_pcs_max=data['model']['n_pcs_max'],
-                use_fpca=data['model']['use_fpca'],
-                fpca=FPCAConfig(**data['model']['fpca'])
+                var_explained_max=data_model.get('var_explained_max'),
+                n_pcs_max=data_model.get('n_pcs_max'),
+                use_fpca=data_model.get('use_fpca'),
+                fpca=FPCAConfig(**data_model.get('fpca', {}))
             )
         )
 
@@ -98,6 +105,8 @@ def create_parser():
 
     parser_init = subparsers.add_parser('init', help='Initialize a new latent-rna project')
     parser_init.add_argument('project_dir', type=Path, help='Directory to create and initialize project in.')
+    parser_init.add_argument('--config-type', type=str, choices=['default', 'example', 'extended'], default='default', help='Type of config file to initialize project with. "default" includes parameters for the recommended binning and model fitting methods. "example" includes a config and coverage manifest file set up to run the example dataset. "extended" includes all possible config parameters.')
+    parser_init.add_argument('--template', type=str, choices=['both', 'snakemake', 'shell'], default='both', help='Specify "snakemake" to include a snakefile, "shell" to include a shell script with the basic commands, or "both" to include both.')
 
     parser_binning = subparsers.add_parser('binning', help='Partition genes into bins for summarizing coverage data')
     parser_prepare = subparsers.add_parser('prepare', help='Prepare RNA-seq coverage for a batch of genes')
@@ -143,7 +152,7 @@ def cli():
     parser = create_parser()
     args = parser.parse_args()
     if args.subcommand == 'init':
-        init_project(args.project_dir)
+        init_project(args.project_dir, args.config_type, args.template)
         return
     
     # Look for config file in project directory if not specified
@@ -156,6 +165,8 @@ def cli():
     sample_table = get_sample_table(config.input.coverage)
 
     if args.subcommand == 'binning':
+        assert config.input.gtf is not None, 'gtf is required for binning'
+        assert config.input.chromosomes is not None, 'chromosomes length file is required for binning'
         # Use coverage from all datasets, subsample if necessary
         bigwig_paths = sample_table['path'].tolist()
         if config.binning.adaptive.max_samples and len(bigwig_paths) > config.binning.adaptive.max_samples:
@@ -173,7 +184,7 @@ def cli():
             max_bin_width=config.binning.max_bin_width,
             bin_width_coding=config.binning.fixed_width.coding,
             bin_width_noncoding=config.binning.fixed_width.noncoding,
-            n_bins=config.binning.n_bins,
+            n_bins_per_region=config.binning.n_bins_per_region.n_bins,
             batch=args.batch
         )
 
@@ -184,6 +195,7 @@ def cli():
             datasets = sample_table['dataset'].unique().tolist()
             assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
             dataset = datasets[0]
+        sample_table = sample_table.loc[sample_table['dataset'] == dataset, :]
         n_batches = len(list(project_dir.glob('gene_bins/batch_*.bed.gz')))
         batches = [args.batch] if args.batch is not None else list(range(n_batches))
         (project_dir / 'covg_norm').mkdir(exist_ok=True)

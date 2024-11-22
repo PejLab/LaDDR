@@ -534,7 +534,7 @@ def binning(
     max_bin_width: Optional[int] = None,
     bin_width_coding: Optional[int] = None,
     bin_width_noncoding: Optional[int] = None,
-    n_bins: Optional[int] = None,
+    n_bins_per_region: Optional[int] = None,
     batch: Optional[int] = None,
 ):
     anno = read_gtf(gtf)
@@ -610,7 +610,7 @@ def binning(
             if binning_method == 'bin-width':
                 batch_bins = split_regions_bin_width(batch_anno, bin_width_coding, bin_width_noncoding)
             else:
-                batch_bins = split_regions_n_bins(batch_anno, n_bins)
+                batch_bins = split_regions_n_bins(batch_anno, n_bins_per_region)
             batch_bins = split_large_bins(batch_bins, max_bin_width)
             batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
 

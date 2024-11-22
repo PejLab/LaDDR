@@ -25,6 +25,13 @@ setup(
         "PyYAML",
     ],
     package_data={
-        "latent_rna": ["config.default.yaml"],
+        "latent_rna.resources": [
+            "config.default.yaml",
+            "config.example.yaml",
+            "config.extended.yaml",
+            "coverage_manifest.tsv",
+            "Snakefile",
+            "run.sh",
+        ],
     },
 )

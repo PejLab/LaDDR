@@ -1,13 +1,13 @@
-# Configuration for latent-rna pipeline run on example data
+# Default configuration for latent-rna pipeline
 
 # Input files
 input:
   # GTF annotation file path. Must be the collapsed annotation produced by `collapse_annotation.py`.
-  gtf: ../data_input/collapsed.gtf
+  gtf: path/to/collapsed.gtf
   # Chromosome lengths file tab-delimited file with chromosome name and length
   # in first two columns, no header. Additional columns are ignored. (e.g.
   # chrNameLength.txt from STAR index or the *.fa.fai genome FASTA index file)
-  chromosomes: ../data_input/chr_lengths.genome
+  chromosomes: path/to/chr_lengths.genome
   # How to specify datasets and samples and locate bigWig coverage files
   coverage:
     # Method to use for locating bigWig files: directory or manifest
@@ -17,19 +17,15 @@ input:
     # If method is "manifest", path to a headerless tab-delimited manifest file with three columns:
     # dataset, sample, path to bigWig file.
     manifest: coverage_manifest.tsv
-  # Optional: File containing paths to phenotype tables to regress out
-  pheno_paths:
-    - ../data_input/phenotypes/alt_TSS.bed.gz
-    - ../data_input/phenotypes/alt_polyA.bed.gz
-    - ../data_input/phenotypes/expression.bed.gz
-    - ../data_input/phenotypes/isoforms.bed.gz
-    - ../data_input/phenotypes/splicing.bed.gz
-    - ../data_input/phenotypes/stability.bed.gz
+  # Optional: List of paths to phenotype tables (BED format) to regress out
+  # pheno_paths:
+  #   - path/to/modality1.bed.gz
+  #   - path/to/modality2.bed.gz
 
 # Binning parameters
 binning:
   # Number of genes (at most) per batch
-  batch_size: 20
+  batch_size: 200
   # Maximum width of any bin
   max_bin_width: 1024
   # Parameters for adaptive binning
