@@ -7,7 +7,7 @@ from typing import Optional, List
 import numpy as np
 import pandas as pd
 import yaml
-from .binning import binning
+from .binning import adaptive_binning, fixed_binning
 from .coverage import prepare
 from .init import init_project
 from .models import fit, transform
@@ -38,17 +38,17 @@ class FixedWidthBinningConfig:
     noncoding: Optional[int] = 128
 
 @dataclass
-class NbinsPerRegionBinningConfig:
-    n_bins: Optional[int] = 24
+class FixedCountBinningConfig:
+    n_bins_per_region: Optional[int] = 24
 
 @dataclass
 class BinningConfig:
-    method: Optional[str] = 'adaptive3'
+    method: Optional[str] = 'adaptive_diffvar'
     batch_size: Optional[int] = 20
     max_bin_width: Optional[int] = 1024
     adaptive: Optional[AdaptiveBinningConfig] = None
     fixed_width: Optional[FixedWidthBinningConfig] = None
-    n_bins_per_region: Optional[NbinsPerRegionBinningConfig] = None
+    fixed_count: Optional[FixedCountBinningConfig] = None
 
 @dataclass
 class FPCAConfig:
@@ -89,7 +89,7 @@ class Config:
                 max_bin_width=data_binning.get('max_bin_width'),
                 adaptive=AdaptiveBinningConfig(**data_binning.get('adaptive', {})),
                 fixed_width=FixedWidthBinningConfig(**data_binning.get('fixed_width', {})),
-                n_bins_per_region=NbinsPerRegionBinningConfig(**data_binning.get('n_bins_per_region', {}))
+                fixed_count=FixedCountBinningConfig(**data_binning.get('fixed_count', {}))
             ),
             model=ModelConfig(
                 var_explained_max=data_model.get('var_explained_max'),
@@ -171,22 +171,35 @@ def cli():
         bigwig_paths = sample_table['path'].tolist()
         if config.binning.adaptive.max_samples and len(bigwig_paths) > config.binning.adaptive.max_samples:
             bigwig_paths = np.random.choice(bigwig_paths, config.binning.adaptive.max_samples, replace=False)
-        binning(
-            gtf=project_dir / config.input.gtf,
-            chromosomes=project_dir / config.input.chromosomes,
-            outdir=project_dir / 'gene_bins',
-            batch_size=config.binning.batch_size,
-            binning_method=config.binning.method,
-            bigwig_paths=bigwig_paths,
-            bins_per_gene=config.binning.adaptive.bins_per_gene,
-            min_mean_total_covg=config.binning.adaptive.min_mean_total_covg,
-            max_corr=config.binning.adaptive.max_corr,
-            max_bin_width=config.binning.max_bin_width,
-            bin_width_coding=config.binning.fixed_width.coding,
-            bin_width_noncoding=config.binning.fixed_width.noncoding,
-            n_bins_per_region=config.binning.n_bins_per_region.n_bins,
-            batch=args.batch
-        )
+        if config.binning.method in ['adaptive_covgcorr', 'adaptive_covgvar', 'adaptive_diffvar']:
+            adaptive_binning(
+                gtf=project_dir / config.input.gtf,
+                chromosomes=project_dir / config.input.chromosomes,
+                outdir=project_dir / 'gene_bins',
+                batch_size=config.binning.batch_size,
+                binning_method=config.binning.method,
+                bigwig_paths=bigwig_paths,
+                bins_per_gene=config.binning.adaptive.bins_per_gene,
+                min_mean_total_covg=config.binning.adaptive.min_mean_total_covg,
+                max_corr=config.binning.adaptive.max_corr,
+                max_bin_width=config.binning.max_bin_width,
+                batch=args.batch
+            )
+        elif config.binning.method in ['fixed_width', 'fixed_count']:
+            fixed_binning(
+                gtf=project_dir / config.input.gtf,
+                chromosomes=project_dir / config.input.chromosomes,
+                outdir=project_dir / 'gene_bins',
+                batch_size=config.binning.batch_size,
+                binning_method=config.binning.method,
+                max_bin_width=config.binning.max_bin_width,
+                bin_width_coding=config.binning.fixed_width.coding,
+                bin_width_noncoding=config.binning.fixed_width.noncoding,
+                n_bins_per_region=config.binning.fixed_count.n_bins_per_region,
+                batch=args.batch
+            )
+        else:
+            raise ValueError(f'Invalid binning method: {config.binning.method}')
 
     elif args.subcommand == 'prepare':
         if args.dataset is not None:

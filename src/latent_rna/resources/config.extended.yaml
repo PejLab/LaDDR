@@ -25,10 +25,10 @@ input:
 
 # Binning parameters
 binning:
-  # Method to use for binning: adaptive1, adaptive2, adaptive3, fixed_width, or n_bins_per_region
+  # Method to use for binning: adaptive_covgcorr, adaptive_covgvar, adaptive_diffvar, fixed_width, or fixed_count
   # Whether to determine bins adaptively from coverage data, split all coding/noncoding regions into fixed-width bins, or split each region into a fixed number of bins.
   # TODO describe each method in more detail
-  method: adaptive3
+  method: adaptive_diffvar
   # Number of genes (at most) per batch
   batch_size: 200
   # Maximum width of any bin
@@ -37,22 +37,22 @@ binning:
   adaptive:
     # Maximum number of coverage samples to use for binning. Samples from all datasets are used, and a random subset is selected if there are more than this number.
     max_samples: 64
-    # For method "adaptive2" or "adaptive3", approximate number of bins to create per gene on average.  
+    # For method "adaptive_covgvar" or "adaptive_diffvar", approximate number of bins to create per gene on average.  
     bins_per_gene: 256
-    # For method "adaptive1", minimum allowed mean total coverage per sample for a bin.
+    # For method "adaptive_covgcorr", minimum allowed mean total coverage per sample for a bin.
     min_mean_total_covg: 128
-    # For method "adaptive1", maximum allowed correlation between normalized coverage of adjacent bins.
+    # For method "adaptive_covgcorr", maximum allowed correlation between normalized coverage of adjacent bins.
     max_corr: 0.8
-  # Parameters for fixed-width binning  
+  # Parameters for fixed_width binning  
   fixed_width:
     # Width of bins for coding (exonic) regions of the genes.
     coding: 16
     # Width of bins for noncoding (non-exonic) regions of the genes.
     noncoding: 128
-  # Parameters for n_bins_per_region binning
-  n_bins_per_region:
-    # Number of bins per exonic/intronic region for n_bins_per_region method
-    n_bins: 24
+  # Parameters for fixed_count binning
+  fixed_count:
+    # Number of bins per exonic/intronic region
+    n_bins_per_region: 24
 
 # Model parameters
 model:
