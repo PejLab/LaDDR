@@ -14,6 +14,7 @@ Run this command to generate a project directory `myproject` with the basic conf
 
 ```shell
 latent-rna init myproject
+cd myproject
 ```
 
 ```
@@ -28,7 +29,7 @@ Files created:
 
 Either `run.sh` or `Snakefile` can be modified as needed to run the project. We recommend adapting the `Snakefile` for your project and using the [Snakemake](https://snakemake.readthedocs.io/en/stable/) workflow system.
 
-The default config contains parameters for the recommended binning and model fitting methods. To start with a config file containing all method options and parameters, use `latent-rna init myproject --config-type extended`.
+Aside from command line arguments for the dataset and/or batch for which to run a command, all parameters, file paths, etc. are specified in the `config.yaml` file, since they are often reused across commands. The default config contains parameters for the recommended binning and model fitting methods. To start with a config file containing all method options and parameters, use `latent-rna init myproject --config-type extended`.
 
 `examples/` contains two project directories set up to run example projects on two small datasets using either method. If you install the package from pip and do not have `examples/`, you can generate its two subdirectories with these commands:
 
@@ -59,19 +60,28 @@ A latent phenotype table will be produced for each dataset containing phenotypes
 
 ## Usage
 
-This method involves four main steps as outlined below. If using existing genomic bin definitions, only steps 2-4 are required. If also using pretrained latent phenotyping models, only steps 2 and 4 are required.
+This method involves five main steps as outlined below.
 
-### 1. Define genomic bins
+### 1. Set up gene info etc.
 
-The binning step requires two reference files:
-
-- Chromosome lengths, which can be `chrNameLength.txt` from the STAR index or the `*.fa.fai` genome FASTA index file.
-- Gene annotations, preprocessed to merge the exons for all isoforms of a gene into one set of non-overlapping exon regions. To do this, use the [`collapse_annotation.py` script from the GTEx pipeline](https://github.com/broadinstitute/gtex-pipeline/blob/master/gene_model/collapse_annotation.py):
+This command prepares any data that needs to be generated once before the batch processing steps are run:
 
 ```shell
-python scripts/collapse_annotation.py Homo_sapiens.GRCh38.106.gtf.gz collapsed.gtf --collapse_only
-gzip collapsed.gtf
+latent-rna setup
 ```
+
+This must be run before running the Snakemake pipeline. It generates a table of gene information and a table of exon regions extracted from the gene annotation GTF file. It filters genes to include only those with `gene_biotype`/`gene_type` of  "protein_coding", and assigns genes to batches so that the binning, coverage processing, and model fitting steps can be run in batches for parallelization and to reduce memory.
+
+For certain adaptive binning methods, including the default method, this step also computes a cumulative variance threshold used in each batch of the binning step to produce the desired number of bins.
+
+It requires two reference files specified in your config file:
+
+- Gene annotations in GTF format.
+- Chromosome lengths, which can be `chrNameLength.txt` from the STAR index or the `*.fa.fai` genome FASTA index file.
+
+Beware editing the config file after running `latent-rna setup`, as the info generated may not be compatible with the updated parameters and cause silent bugs.
+
+### 2. Define genomic bins
 
 Then, split gene regions into bins to be used for summarizing and representing coverage data:
 
@@ -79,27 +89,9 @@ Then, split gene regions into bins to be used for summarizing and representing c
 latent-rna binning --batch 0
 ```
 
-This step also filters genes to include only those with `gene_biotype`/`gene_type` of  "protein_coding", and excludes bins that overlap the exon of another gene. Genes are assigned to batches so that the binning, coverage processing, and model fitting steps can be run in batches for parallelization and to reduce memory. In the final phenotyping step, all batches are recombined into one phenotype file. By default, binning is determined using coverage data, partitioning each gene in a way that aims to define more, smaller bins in areas of greater variation across samples.
+By default, binning is determined using coverage data, partitioning each gene in a way that aims to define more, smaller bins in areas of greater variation across samples. It excludes any bins that overlap the exon of another protein-coding gene.
 
-#### Command line options
-
-```
-usage: latent-rna binning [-h] [-c FILE] [-p PROJECT_DIR] [-b N]
-
-options:
-  -h, --help            show this help message and exit
-  -c FILE, --config FILE
-                        Path to project configuration file. Defaults to
-                        config.yaml in project directory.
-  -p PROJECT_DIR, --project-dir PROJECT_DIR
-                        Project directory. Paths in config are relative to
-                        this. Defaults to current directory.
-  -b N, --batch N       Batch ID to process. Batch IDs are integers starting
-                        from 0. If omitted, all batches will be processed.
-```
-
-### 2. Bin and normalize RNA-seq coverage
-
+### 3. Bin and normalize RNA-seq coverage
 
 For each gene batch, use its bin definitions to get mean coverage per bin for all samples and normalize:
 
@@ -109,71 +101,18 @@ latent-rna prepare --dataset dset1 --batch 0
 
 At this stage you can also provide quantified explicit phenotypes, e.g. from [Pantry](https://github.com/PejLab/Pantry), to regress out. Training and applying models on this residualized coverage data results in "residual" latent RNA phenotypes, which can complement the explicit phenotypes by representing uncharacterized transcriptomic variation.
 
-#### Command line options
+### 4. Fit latent RNA phenotype models
 
-```
-usage: latent-rna prepare [-h] [-c FILE] [-p PROJECT_DIR] [-d NAME] [-b N]
-
-options:
-  -h, --help            show this help message and exit
-  -c FILE, --config FILE
-                        Path to project configuration file. Defaults to
-                        config.yaml in project directory.
-  -p PROJECT_DIR, --project-dir PROJECT_DIR
-                        Project directory. Paths in config are relative to
-                        this. Defaults to current directory.
-  -d NAME, --dataset NAME
-                        Name of dataset to process.
-  -b N, --batch N       Batch ID to process. Batch IDs are integers starting
-                        from 0. If omitted, all batches will be processed.
-```
-
-### 3. Fit latent RNA phenotype models
-
-Normalized coverage data are loaded, one batch at a time, and used to fit an FPCA or PCA model for each gene. If a project involves multiple datasets, e.g. tissues, the coverage count matrices for each dataset can be loaded together, and the models will be fit on the concatenated data.
+Normalized coverage data are loaded, one batch at a time, and used to fit a PCA (or FPCA) model for each gene. If a project involves multiple datasets, e.g. tissues, the coverage count matrices for each dataset will be loaded together, and the models will be fit on the concatenated data.
 
 ```shell
 latent-rna fit --batch 0
 ```
 
-#### Command line options
-
-```
-usage: latent-rna fit [-h] [-c FILE] [-p PROJECT_DIR] [-b N]
-
-options:
-  -h, --help            show this help message and exit
-  -c FILE, --config FILE
-                        Path to project configuration file. Defaults to
-                        config.yaml in project directory.
-  -p PROJECT_DIR, --project-dir PROJECT_DIR
-                        Project directory. Paths in config are relative to
-                        this. Defaults to current directory.
-  -b N, --batch N       Batch ID to process. Batch IDs are integers starting
-                        from 0. If omitted, all batches will be processed.
-```
-
-### 4. Generate latent RNA phenotypes
+### 5. Generate latent RNA phenotypes
 
 Normalized coverage matrices are loaded, one batch at a time, and transformed using the fitted models. The transformed data is saved as a table of phenotypes by samples, i.e. multiple PCs per gene. If a project involves multiple datasets, the coverage count matrices for each dataset can be loaded and transformed separately using the same set of models, so that the phenotypes correspond across datasets.
 
 ```shell
 latent-rna transform --dataset dset1
-```
-
-#### Command line options
-
-```
-usage: latent-rna transform [-h] [-c FILE] [-p PROJECT_DIR] [-d NAME]
-
-options:
-  -h, --help            show this help message and exit
-  -c FILE, --config FILE
-                        Path to project configuration file. Defaults to
-                        config.yaml in project directory.
-  -p PROJECT_DIR, --project-dir PROJECT_DIR
-                        Project directory. Paths in config are relative to
-                        this. Defaults to current directory.
-  -d NAME, --dataset NAME
-                        Name of dataset to process.
 ```

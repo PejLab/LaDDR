@@ -7,7 +7,7 @@ from typing import List
 import numpy as np
 import pandas as pd
 import yaml
-from .binning import adaptive_binning, fixed_binning
+from .binning import adaptive_binning, fixed_binning, variance_threshold
 from .coverage import prepare_coverage
 from .init import init_project
 from .models import fit, transform
@@ -140,7 +140,7 @@ def create_parser():
     parser_setup = subparsers.add_parser('setup', help='Process annotations and determine gene batches')
     parser_binning = subparsers.add_parser('binning', help='Partition genes into bins for summarizing coverage data')
     parser_prepare = subparsers.add_parser('coverage', help='Prepare RNA-seq coverage for a batch of genes')
-    parser_fit = subparsers.add_parser('fit', help='Fit FPCA or PCA models to coverage data')
+    parser_fit = subparsers.add_parser('fit', help='Fit latent phenotype models to coverage data')
     parser_transform = subparsers.add_parser('transform', help='Apply fitted models to coverage data')
 
     for subparser in [parser_setup, parser_binning, parser_prepare, parser_fit, parser_transform]:
@@ -178,7 +178,137 @@ def get_sample_table(coverage_config: CoverageConfig) -> pd.DataFrame:
     else:
         return pd.read_csv(coverage_config.manifest, sep='\t', names=['dataset', 'sample', 'path'])
 
+def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):
+    """Process annotations and determine gene batches"""
+    assert config.input.gtf is not None, 'gtf is required for setup'
+    assert config.input.chromosomes is not None, 'chromosomes length file is required for setup'
+    genes = setup(
+        gtf=project_dir / config.input.gtf,
+        chrom_file=project_dir / config.input.chromosomes,
+        batch_size=config.binning.batch_size,
+        outdir=project_dir / 'info'
+    )
+    if config.binning.method in ['adaptive_covgvar', 'adaptive_diffvar']:
+        # Use coverage from all datasets, subsample if necessary
+        bigwig_paths = [Path(p) for p in sample_table['path'].tolist()]
+        if len(bigwig_paths) > config.binning.adaptive.max_samples:
+            bigwig_paths = np.random.choice(bigwig_paths, config.binning.adaptive.max_samples, replace=False)
+        var_per_bin = variance_threshold(
+            genes=genes,
+            bigwig_paths=bigwig_paths,
+            bins_per_gene=config.binning.adaptive.bins_per_gene,
+            covg_diff=config.binning.method == 'adaptive_diffvar'
+        )
+        with open(project_dir / 'info' / 'var_per_bin.txt', 'w') as f:
+            f.write(f'{var_per_bin:g}')
+
+def cli_binning(args: argparse.Namespace, config: Config, project_dir: Path, sample_table: pd.DataFrame):
+    """Partition genes into bins for summarizing coverage data"""
+    if config.binning.method in ['adaptive_covgcorr', 'adaptive_covgvar', 'adaptive_diffvar']:
+        # Use coverage from all datasets, subsample if necessary
+        bigwig_paths = [Path(p) for p in sample_table['path'].tolist()]
+        if len(bigwig_paths) > config.binning.adaptive.max_samples:
+            bigwig_paths = np.random.choice(bigwig_paths, config.binning.adaptive.max_samples, replace=False)
+        if config.binning.method in {'adaptive_covgvar', 'adaptive_diffvar'}:
+            with open(project_dir / 'info' / 'var_per_bin.txt', 'r') as f:
+                var_threshold = float(f.read())
+        else:
+            var_threshold = None
+        adaptive_binning(
+            gene_file=project_dir / 'info' / 'genes.tsv',
+            exon_file=project_dir / 'info' / 'exons.tsv.gz',
+            outdir=project_dir / 'gene_bins',
+            binning_method=config.binning.method,
+            bigwig_paths=bigwig_paths,
+            var_threshold=var_threshold,
+            min_mean_total_covg=config.binning.adaptive.min_mean_total_covg,
+            max_corr=config.binning.adaptive.max_corr,
+            max_bin_width=config.binning.max_bin_width,
+            batch=args.batch
+        )
+    elif config.binning.method in ['fixed_width', 'fixed_count']:
+        fixed_binning(
+            gene_file=project_dir / 'info' / 'genes.tsv',
+            exon_file=project_dir / 'info' / 'exons.tsv.gz',
+            outdir=project_dir / 'gene_bins',
+            binning_method=config.binning.method,
+            max_bin_width=config.binning.max_bin_width,
+            bin_width_coding=config.binning.fixed_width.coding,
+            bin_width_noncoding=config.binning.fixed_width.noncoding,
+            n_bins_per_region=config.binning.fixed_count.n_bins_per_region,
+            batch=args.batch
+        )
+    else:
+        raise ValueError(f'Invalid binning method: {config.binning.method}')
+
+def cli_coverage(args: argparse.Namespace, config: Config, project_dir: Path, sample_table: pd.DataFrame):
+    """Prepare RNA-seq coverage for a batch of genes"""
+    if args.dataset is not None:
+        dataset = args.dataset
+    else:
+        datasets = sample_table['dataset'].unique().tolist()
+        assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
+        dataset = datasets[0]
+    sample_table = sample_table.loc[sample_table['dataset'] == dataset, :]
+    if args.batch is not None:
+        batches = [args.batch]
+    else:
+        with open(project_dir / 'info' / 'n_batches.txt', 'r') as f:
+            n_batches = int(f.read())
+        batches = list(range(n_batches))
+    (project_dir / 'covg_norm').mkdir(exist_ok=True)
+    prepare_coverage(
+        bigwig_manifest=sample_table,
+        bins_dir=project_dir / 'gene_bins',
+        batches=batches,
+        pheno_files=[project_dir / p for p in config.input.pheno_paths],
+        outdir=project_dir / 'covg_norm' / dataset
+    )
+
+def cli_fit(args: argparse.Namespace, config: Config, project_dir: Path, sample_table: pd.DataFrame):
+    """Fit latent phenotype models to normalized coverage data"""
+    datasets = sample_table['dataset'].unique().tolist()
+    if args.batch is not None:
+        batches = [args.batch]
+    else:
+        with open(project_dir / 'info' / 'n_batches.txt', 'r') as f:
+            n_batches = int(f.read())
+        batches = list(range(n_batches))
+    fit(
+        norm_covg_dirs=[project_dir / 'covg_norm' / dataset for dataset in datasets],
+        batches=batches,
+        var_expl_max=config.model.var_explained_max,
+        n_pcs_max=config.model.n_pcs_max,
+        output_dir=project_dir / 'models',
+        fpca=config.model.use_fpca,
+        fpca_x_values=config.model.fpca.x_values,
+        fpca_basis=config.model.fpca.basis
+    )
+
+def cli_transform(args: argparse.Namespace, project_dir: Path, sample_table: pd.DataFrame):
+    """Apply fitted models to normalized coverage data"""
+    if args.dataset is not None:
+        dataset = args.dataset
+    else:
+        datasets = sample_table['dataset'].unique().tolist()
+        assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
+        dataset = datasets[0]
+    with open(project_dir / 'info' / 'n_batches.txt', 'r') as f:
+        n_batches = int(f.read())
+    print('=== Generating latent phenotypes ===', flush=True)
+    outdir = project_dir / 'phenotypes'
+    outfile = outdir / f'latent_phenos.{dataset}.tsv.gz'
+    output = transform(
+        norm_covg_dir=project_dir / 'covg_norm' / dataset,
+        models_dir=project_dir / 'models',
+        n_batches=n_batches
+    )
+    outdir.mkdir(exist_ok=True)
+    output.to_csv(outfile, sep='\t', index=False, float_format='%g')
+    print(f'Latent phenotypes saved to {outfile}', flush=True)
+
 def cli():
+    """Latent RNA CLI"""
     parser = create_parser()
     args = parser.parse_args()
     if args.subcommand == 'init':
@@ -195,110 +325,18 @@ def cli():
     sample_table = get_sample_table(config.input.coverage)
 
     if args.subcommand == 'setup':
-        assert config.input.gtf is not None, 'gtf is required for setup'
-        assert config.input.chromosomes is not None, 'chromosomes length file is required for setup'
-        setup(
-            gtf=project_dir / config.input.gtf,
-            chrom_file=project_dir / config.input.chromosomes,
-            batch_size=config.binning.batch_size,
-            outdir=project_dir / 'info'
-        )
+        cli_setup(config, project_dir, sample_table)
 
     elif args.subcommand == 'binning':
-        # Use coverage from all datasets, subsample if necessary
-        bigwig_paths = [Path(p) for p in sample_table['path'].tolist()]
-        if config.binning.adaptive.max_samples and len(bigwig_paths) > config.binning.adaptive.max_samples:
-            bigwig_paths = np.random.choice(bigwig_paths, config.binning.adaptive.max_samples, replace=False)
-        if config.binning.method in ['adaptive_covgcorr', 'adaptive_covgvar', 'adaptive_diffvar']:
-            adaptive_binning(
-                gene_file=project_dir / 'info' / 'genes.tsv',
-                exon_file=project_dir / 'info' / 'exons.tsv.gz',
-                outdir=project_dir / 'gene_bins',
-                binning_method=config.binning.method,
-                bigwig_paths=bigwig_paths,
-                bins_per_gene=config.binning.adaptive.bins_per_gene,
-                min_mean_total_covg=config.binning.adaptive.min_mean_total_covg,
-                max_corr=config.binning.adaptive.max_corr,
-                max_bin_width=config.binning.max_bin_width,
-                batch=args.batch
-            )
-        elif config.binning.method in ['fixed_width', 'fixed_count']:
-            fixed_binning(
-                gene_file=project_dir / 'info' / 'genes.tsv',
-                exon_file=project_dir / 'info' / 'exons.tsv.gz',
-                outdir=project_dir / 'gene_bins',
-                binning_method=config.binning.method,
-                max_bin_width=config.binning.max_bin_width,
-                bin_width_coding=config.binning.fixed_width.coding,
-                bin_width_noncoding=config.binning.fixed_width.noncoding,
-                n_bins_per_region=config.binning.fixed_count.n_bins_per_region,
-                batch=args.batch
-            )
-        else:
-            raise ValueError(f'Invalid binning method: {config.binning.method}')
+        cli_binning(args, config, project_dir, sample_table)
 
     elif args.subcommand == 'coverage':
-        if args.dataset is not None:
-            dataset = args.dataset
-        else:
-            datasets = sample_table['dataset'].unique().tolist()
-            assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
-            dataset = datasets[0]
-        sample_table = sample_table.loc[sample_table['dataset'] == dataset, :]
-        if args.batch is not None:
-            batches = [args.batch]
-        else:
-            with open(project_dir / 'info' / 'n_batches.txt', 'r') as f:
-                n_batches = int(f.read())
-            batches = list(range(n_batches))
-        (project_dir / 'covg_norm').mkdir(exist_ok=True)
-        prepare_coverage(
-            bigwig_manifest=sample_table,
-            bins_dir=project_dir / 'gene_bins',
-            batches=batches,
-            pheno_files=[project_dir / p for p in config.input.pheno_paths],
-            outdir=project_dir / 'covg_norm' / dataset
-        )
-
+        cli_coverage(args, config, project_dir, sample_table)
     elif args.subcommand == 'fit':
-        datasets = sample_table['dataset'].unique().tolist()
-        if args.batch is not None:
-            batches = [args.batch]
-        else:
-            with open(project_dir / 'info' / 'n_batches.txt', 'r') as f:
-                n_batches = int(f.read())
-            batches = list(range(n_batches))
-        fit(
-            norm_covg_dirs=[project_dir / 'covg_norm' / dataset for dataset in datasets],
-            batches=batches,
-            var_expl_max=config.model.var_explained_max,
-            n_pcs_max=config.model.n_pcs_max,
-            output_dir=project_dir / 'models',
-            fpca=config.model.use_fpca,
-            fpca_x_values=config.model.fpca.x_values,
-            fpca_basis=config.model.fpca.basis
-        )
+        cli_fit(args, config, project_dir, sample_table)
 
     elif args.subcommand == 'transform':
-        if args.dataset is not None:
-            dataset = args.dataset
-        else:
-            datasets = sample_table['dataset'].unique().tolist()
-            assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
-            dataset = datasets[0]
-        with open(project_dir / 'info' / 'n_batches.txt', 'r') as f:
-            n_batches = int(f.read())
-        print('=== Generating latent phenotypes ===', flush=True)
-        outdir = project_dir / 'phenotypes'
-        outfile = outdir / f'latent_phenos.{dataset}.tsv.gz'
-        output = transform(
-            norm_covg_dir=project_dir / 'covg_norm' / dataset,
-            models_dir=project_dir / 'models',
-            n_batches=n_batches
-        )
-        outdir.mkdir(exist_ok=True)
-        output.to_csv(outfile, sep='\t', index=False, float_format='%g')
-        print(f'Latent phenotypes saved to {outfile}', flush=True)
+        cli_transform(args, project_dir, sample_table)
 
 if __name__ == '__main__':
     cli()

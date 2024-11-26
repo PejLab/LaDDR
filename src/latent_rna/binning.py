@@ -167,11 +167,12 @@ def get_adaptive_bins_covgcorr_batch(genes: pd.DataFrame, bigwig_paths: list[Pat
     return bins
 
 def estimate_var_sum_per_gene(genes: pd.DataFrame, bigwig_paths: list[Path], covg_diff: bool = False, pseudocount: float = 8) -> pd.DataFrame:
-    """Use a subsample of genes to estimate mean sum of variance of log-coverage across samples
+    """Use a subsample of genes to estimate mean sum of variance across a gene
 
-    By dividing this by the desired number of bins per gene, we can estimate the
-    cumulative variance threshold per bin that produces the desired number of
-    bins on average.
+    This uses either the variance of log-coverage, or the variance of the diff
+    in log-coverage between adjacent positions. By dividing this by the desired
+    number of bins per gene, we can estimate the cumulative variance threshold
+    per bin that produces the desired number of bins on average.
     
     Args:
         genes: DataFrame with index 'gene_id' and columns 'seqname',
@@ -181,17 +182,45 @@ def estimate_var_sum_per_gene(genes: pd.DataFrame, bigwig_paths: list[Path], cov
         pseudocount: Pseudocount to add to coverage values (mean coverage per
           bp for each bin)
     """
-    n_genes = min(100, genes.shape[0])
-    sub_genes = genes.sample(n_genes)
     total = 0
-    for gene in sub_genes.itertuples(index=False):
+    for gene in genes.itertuples(index=False):
         seqname, window_start, window_end = gene.seqname, gene.window_start, gene.window_end
         covg = load_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end)
         covg = np.log2(covg + pseudocount)
         if covg_diff:
             covg = np.diff(covg, axis=0, append=np.log2(pseudocount))
         total += np.sum(np.var(covg, axis=1))
-    return total / n_genes
+    return total / genes.shape[0]
+
+def variance_threshold(genes: pd.DataFrame, bigwig_paths: list[Path], bins_per_gene: int, covg_diff: bool = False, pseudocount: float = 8) -> float:
+    """Estimate the variance threshold needed per bin
+
+    Due to spikes in variance, especially for diff of log-coverage, a basic
+    threshold calculation based on total cumulative variance per gene and
+    desired number of bins per gene will produce too few bins. This function
+    calculates an initial threshold, calculates bins on the sample of genes, and
+    then calibrates the threshold based on the actual number of bins produced.
+
+    Args:
+        genes: DataFrame with index 'gene_id' and columns 'seqname',
+          'window_start', 'window_end', 'strand',
+        bigwig_paths: List of paths to bigWig files to use for coverage data
+        bins_per_gene: Desired number of bins per gene on average
+        covg_diff: If True, use the difference in coverage between adjacent bins
+        pseudocount: Pseudocount to add to coverage values (mean coverage per
+          bp for each bin)
+
+    Returns:
+        Calibrated variance threshold per bin
+    """
+    n_genes = min(100, genes.shape[0])
+    sub_genes = genes.sample(n_genes)
+    var_per_gene = estimate_var_sum_per_gene(sub_genes, bigwig_paths, covg_diff, pseudocount)
+    initial_threshold = var_per_gene / bins_per_gene
+    bins = get_adaptive_bins_var_batch(sub_genes, bigwig_paths, initial_threshold, covg_diff, pseudocount)
+    actual_bins_per_gene = bins.shape[0] / n_genes
+    new_threshold = initial_threshold * actual_bins_per_gene / bins_per_gene
+    return new_threshold
 
 def get_adaptive_bins_var_batch(genes: pd.DataFrame, bigwig_paths: list[Path], var_per_bin: float, covg_diff: bool = False, pseudocount: float = 8) -> pd.DataFrame:
     """Get adaptive bins for all genes based on coverage variance
@@ -431,9 +460,9 @@ def remove_bins_overlapping_exon(bins: pd.DataFrame, exons: pd.DataFrame) -> pd.
     """Remove bins that overlap with an exon of another gene"""
     overlap = np.array(list(bins_overlap_exons(bins, exons)))
     percentage = 100 * sum(overlap) / len(overlap)
-    types_removed = bins.loc[overlap, 'feature'].value_counts()
+    # types_removed = bins.loc[overlap, 'feature'].value_counts()
     print(f'Removed {sum(overlap)} bins ({percentage:.6}%) that overlapped with an exon of another gene')
-    print(f'Bin types removed: {types_removed.to_dict()}')
+    # print(f'Bin types removed: {types_removed.to_dict()}')
     bins = bins.loc[~overlap, :]
     return bins
 
@@ -467,14 +496,14 @@ def adaptive_binning(
     exon_file: Path,
     outdir: Path,
     bigwig_paths: list[Path],
+    batch: Optional[int] = None,
     binning_method: str = 'adaptive_diffvar',
-    bins_per_gene: Optional[int] = None,
+    var_threshold: Optional[int] = None,
     min_mean_total_covg: Optional[float] = None,
     max_corr: Optional[float] = None,
     max_bin_width: Optional[int] = None,
-    batch: Optional[int] = None,
 ):
-    """Adaptive binning
+    """Adaptive binning based on RNA-seq coverage patterns
     
     Args:
         gene_file: Path to a tab-delimited file with columns 'gene_id',
@@ -482,29 +511,25 @@ def adaptive_binning(
         exon_file: Path to a tab-delimited file with columns 'gene_id',
           'seqname', 'start', and 'end'. Additional columns are ignored.
         outdir: Directory to save output BED files
+        batch: Batch number to run, or None to run all batches
+        bigwig_paths: List of paths to bigWig files
         binning_method: Either 'adaptive_covgcorr', 'adaptive_covgvar', or
           'adaptive_diffvar'
-        bigwig_paths: List of paths to bigWig files
-        bins_per_gene: For 'adaptive_covgvar' or 'adaptive_diffvar', approximate
-          number of bins to create per gene on average. For 'adaptive_covgcorr',
-          approximate number of bins to create per gene on average.
+        var_threshold: For 'adaptive_covgvar' or 'adaptive_diffvar', the
+          variance threshold for determining bin boundaries, computed to produce
+          an approximate desired number of bins per gene.
         min_mean_total_covg: For 'adaptive_covgcorr', minimum allowed mean total
           coverage per sample for a bin.
         max_corr: For 'adaptive_covgcorr', maximum allowed correlation between
           normalized coverage of adjacent bins.
         max_bin_width: Maximum allowed width for a bin
-        batch: Batch number to run, or None to run all batches
     """
     genes = pd.read_csv(gene_file, sep='\t', index_col=0, dtype={'seqname': str})
     exons = pd.read_csv(exon_file, sep='\t', dtype={'seqname': str})
     chromosomes = list(exons['seqname'].unique())
 
-    if binning_method == 'adaptive_covgvar':
-        var_per_gene = estimate_var_sum_per_gene(genes, bigwig_paths)
-        var_per_bin = var_per_gene / bins_per_gene
-    elif binning_method == 'adaptive_diffvar':
-        var_per_gene = estimate_var_sum_per_gene(genes, bigwig_paths, covg_diff=True)
-        var_per_bin = var_per_gene / bins_per_gene
+    if binning_method in {'adaptive_covgvar', 'adaptive_diffvar'}:
+        assert var_threshold is not None
 
     outdir.mkdir(exist_ok=True)
     batches = sorted(genes['batch'].unique()) if batch is None else [batch]
@@ -513,9 +538,9 @@ def adaptive_binning(
         if binning_method == 'adaptive_covgcorr':
             batch_bins = get_adaptive_bins_covgcorr_batch(batch_genes, bigwig_paths, min_mean_total_covg, max_corr)
         elif binning_method == 'adaptive_covgvar':
-            batch_bins = get_adaptive_bins_var_batch(batch_genes, bigwig_paths, var_per_bin)
+            batch_bins = get_adaptive_bins_var_batch(batch_genes, bigwig_paths, var_threshold)
         elif binning_method == 'adaptive_diffvar':
-            batch_bins = get_adaptive_bins_var_batch(batch_genes, bigwig_paths, var_per_bin, covg_diff=True)
+            batch_bins = get_adaptive_bins_var_batch(batch_genes, bigwig_paths, var_threshold, covg_diff=True)
         else:
             raise ValueError(f'Invalid binning method: {binning_method}. Expected one of: adaptive_covgcorr, adaptive_covgvar, adaptive_diffvar')
         batch_bins = split_large_bins(batch_bins, max_bin_width)
@@ -528,12 +553,12 @@ def fixed_binning(
     gene_file: Path,
     exon_file: Path,
     outdir: Path,
-    binning_method: str,
+    batch: Optional[int] = None,
+    binning_method: Optional[str] = 'fixed_width',
     max_bin_width: Optional[int] = None,
     bin_width_coding: Optional[int] = None,
     bin_width_noncoding: Optional[int] = None,
     n_bins_per_region: Optional[int] = None,
-    batch: Optional[int] = None,
 ):
     """Binning based on annotated regions
     
@@ -543,6 +568,7 @@ def fixed_binning(
         exon_file: Path to a tab-delimited file with columns 'gene_id', 'seqname',
           'start', and 'end'. Additional columns are ignored.
         outdir: Directory to save output BED files
+        batch: Batch number to run, or None to run all batches
         binning_method: Either 'fixed_width' or 'fixed_count'
         max_bin_width: Maximum allowed width for a bin
         bin_width_coding: For 'fixed_width', width of bins for coding (exonic)
@@ -551,7 +577,6 @@ def fixed_binning(
           (non-exonic) regions of the genes.
         n_bins_per_region: For 'fixed_count', number of bins to create per
           region.
-        batch: Batch number to run, or None to run all batches
     """
     genes = pd.read_csv(gene_file, sep='\t', index_col=0, dtype={'seqname': str})
     exons = pd.read_csv(exon_file, sep='\t', dtype={'seqname': str})

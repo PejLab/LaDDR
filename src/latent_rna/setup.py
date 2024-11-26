@@ -127,7 +127,7 @@ def gene_coordinates(exons: pd.DataFrame, chrom_lengths: dict) -> pd.DataFrame:
     genes = genes.sort_values(by='gene_id')
     return genes
 
-def setup(gtf: Path, chrom_file: Path, batch_size: int, outdir: Path):
+def setup(gtf: Path, chrom_file: Path, batch_size: int, outdir: Path) -> pd.DataFrame:
     """Process annotations and determine gene batches
 
     Writes genes.tsv, exons.tsv.gz, and n_batches.txt to outdir.
@@ -137,6 +137,10 @@ def setup(gtf: Path, chrom_file: Path, batch_size: int, outdir: Path):
         chrom_file: Path to chromosome lengths file
         batch_size: Number of genes per batch
         outdir: Path to output directory
+
+    Returns:
+        DataFrame with index 'gene_id' and columns 'seqname', 'window_start',
+        'window_end', 'strand', and 'tss'
     """
     exons = get_exon_regions(gtf)
     chrom_df = pd.read_csv(
@@ -165,3 +169,5 @@ def setup(gtf: Path, chrom_file: Path, batch_size: int, outdir: Path):
 
     with open(outdir / 'n_batches.txt', 'w') as f:
         f.write(str(n_batches))
+
+    return genes
