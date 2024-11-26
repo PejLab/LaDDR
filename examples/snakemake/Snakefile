@@ -1,18 +1,14 @@
 from pathlib import Path
-from gtfparse import read_gtf
 import numpy as np
 import pandas as pd
 
 configfile: 'config.yaml'
 working_dir = Path('.')
 
-# Count total genes and compute number of batches needed
-genes_df = read_gtf(config['input']['gtf'], features={'gene'})
-type_col = 'gene_type' if 'gene_type' in genes_df.columns else 'gene_biotype'
-genes_df = genes_df.loc[genes_df[type_col] == 'protein_coding', :]
-n_genes = len(genes_df['gene_id'].unique())
-batch_size = config['binning']['batch_size']
-N_BATCHES = int(np.ceil(n_genes / batch_size))
+BATCH_FILE = working_dir / 'info' / 'n_batches.txt'
+assert BATCH_FILE.exists(), f'{BATCH_FILE} not found. Run latent-rna setup first.'
+with open(BATCH_FILE, 'r') as f:
+    N_BATCHES = int(f.read())
 
 assert config['input']['coverage']['method'] == 'manifest'
 sample_table = pd.read_csv(config['input']['coverage']['manifest'], sep='\t', names=['dataset', 'sample', 'path'])
@@ -28,15 +24,14 @@ rule all:
 rule get_gene_bins:
     """Divide gene features into bins"""
     input:
-        gtf = config['input']['gtf'],
-        chrom = config['input']['chromosomes'],
+        genes = working_dir / 'info' / 'genes.tsv',
+        exons = working_dir / 'info' / 'exons.tsv.gz',
         bw = sample_table['path'].tolist(),
     output:
-        beds = expand(str(working_dir / 'gene_bins' / 'batch_{batch}.bed.gz'), batch=range(N_BATCHES)),
-        genes = working_dir / 'gene_bins' / 'genes.tsv',
+        beds = working_dir / 'gene_bins' / 'batch_{batch}.bed.gz',
     shell:
         """
-        latent-rna binning
+        latent-rna binning -b {wildcards.batch}
         """
 
 rule prepare_coverage:
@@ -50,7 +45,7 @@ rule prepare_coverage:
         bins = working_dir / 'covg_norm' / '{dataset}' / 'batch_{batch}.bins.tsv.gz',
     shell:
         """
-        latent-rna prepare -d {wildcards.dataset} -b {wildcards.batch}
+        latent-rna coverage -d {wildcards.dataset} -b {wildcards.batch}
         """
 
 rule fit_models:

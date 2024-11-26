@@ -4,14 +4,12 @@ Extract exons from annotation, add noncoding regions, and split into bins for
 computing latent features.
 """
 
-import argparse
 from collections import defaultdict
 import math
 from pathlib import Path
 from queue import PriorityQueue
 from typing import Iterator, Optional
 from bx.intervals.intersection import IntervalTree
-from gtfparse import read_gtf
 import numpy as np
 import pandas as pd
 import pyBigWig
@@ -110,7 +108,7 @@ def get_adaptive_bins_covgcorr(covg: np.array, min_mean_total_covg: float, max_c
         current = current.right
     return starts, ends
 
-def load_covg_from_bigwigs(bigwig_paths: list, seqname: str, start: int, end: int) -> np.array:
+def load_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, end: int) -> np.array:
     """Load coverage data from bigWig files
 
     Args:
@@ -126,13 +124,13 @@ def load_covg_from_bigwigs(bigwig_paths: list, seqname: str, start: int, end: in
     for i, path in enumerate(bigwig_paths):
         with pyBigWig.open(str(path)) as bw:
             try:
-                covg[:, i] = bw.values(seqname, start, end)
+                covg[:, i] = bw.values(str(seqname), start, end)
             except RuntimeError as e:
-                print(f"RuntimeError for {seqname}:{start}-{end} in file {bw.stem}: {e}", flush=True)
+                print(f"RuntimeError for {seqname}:{start}-{end} in file {path}: {e}", flush=True)
                 raise e
     return covg
 
-def get_adaptive_bins_covgcorr_batch(genes: pd.DataFrame, bigwig_paths: list, min_mean_total_covg: float, max_corr: float) -> pd.DataFrame:
+def get_adaptive_bins_covgcorr_batch(genes: pd.DataFrame, bigwig_paths: list[Path], min_mean_total_covg: float, max_corr: float) -> pd.DataFrame:
     """Get adaptive bins for each gene in the annotation
     
     Args:
@@ -168,7 +166,7 @@ def get_adaptive_bins_covgcorr_batch(genes: pd.DataFrame, bigwig_paths: list, mi
     bins = bins.reset_index()
     return bins
 
-def estimate_var_sum_per_gene(genes: pd.DataFrame, bigwig_paths: list, covg_diff: bool = False, pseudocount: float = 8) -> pd.DataFrame:
+def estimate_var_sum_per_gene(genes: pd.DataFrame, bigwig_paths: list[Path], covg_diff: bool = False, pseudocount: float = 8) -> pd.DataFrame:
     """Use a subsample of genes to estimate mean sum of variance of log-coverage across samples
 
     By dividing this by the desired number of bins per gene, we can estimate the
@@ -195,7 +193,7 @@ def estimate_var_sum_per_gene(genes: pd.DataFrame, bigwig_paths: list, covg_diff
         total += np.sum(np.var(covg, axis=1))
     return total / n_genes
 
-def get_adaptive_bins_var_batch(genes: pd.DataFrame, bigwig_paths: list, var_per_bin: float, covg_diff: bool = False, pseudocount: float = 8) -> pd.DataFrame:
+def get_adaptive_bins_var_batch(genes: pd.DataFrame, bigwig_paths: list[Path], var_per_bin: float, covg_diff: bool = False, pseudocount: float = 8) -> pd.DataFrame:
     """Get adaptive bins for all genes based on coverage variance
     
     Args:
@@ -384,8 +382,8 @@ def split_large_bins(anno: pd.DataFrame, max_bin_width: int) -> pd.DataFrame:
     """Split large bins into smaller bins
     
     Args:
-        bin: DataFrame with one row representing the bin to split. Must
-          have columns 'seqname', 'start', 'end', 'strand', 'feature'.
+        anno: DataFrame representing the bins to split. Must have columns
+          'seqname', 'start', 'end', 'strand', 'feature'.
         max_bin_width: Maximum allowed width for a bin
 
     Returns:
@@ -439,85 +437,6 @@ def remove_bins_overlapping_exon(bins: pd.DataFrame, exons: pd.DataFrame) -> pd.
     bins = bins.loc[~overlap, :]
     return bins
 
-def load_annotations(gtf: Path) -> pd.DataFrame:
-    """Load annotations from a GTF file"""
-    anno = read_gtf(gtf)
-    # Newer versions return a polars DF by default, but not all versions allow
-    # return type to be specified, so this handles older and newer versions:
-    if type(anno).__module__ == 'polars.dataframe.frame':
-        anno = anno.to_pandas()
-
-    # Require only one isoform per gene:
-    n_iso = anno.groupby('gene_id')['transcript_id'].nunique()
-    assert (n_iso == 1).all(), 'Multiple isoforms per gene found in GTF file. Use `collapse_annotation.py` with the `--collapse_only` argument to collapse the annotation to a single isoform per gene.'
-
-    anno['start'] = anno['start'] - 1  # Convert to 0-based
-    anno = anno.loc[anno['feature'] == 'exon', :]
-    exons = anno.copy() # Save all exons to check for overlap later
-    type_col = 'gene_type' if 'gene_type' in anno.columns else 'gene_biotype'
-    anno = anno.loc[anno[type_col] == 'protein_coding', :]
-    anno = anno[['gene_id', 'seqname', 'start', 'end', 'strand', 'feature']]
-    anno = anno.sort_values(by=['gene_id', 'start'])
-    return anno, exons
-
-def load_chromosomes(chrom_file: Path) -> pd.DataFrame:
-    """Load chromosome length and sort order info
-    
-    Args:
-        chrom_file: Path to a tab-delimited file with chromosome name and length
-          in first two columns, no header. Additional columns are ignored.
-
-    Returns:
-        DataFrame with columns 'chrom' and 'length' containing chromosome names
-        and lengths.
-    """
-    chrom = pd.read_csv(
-        chrom_file,
-        sep='\t',
-        header=None,
-        usecols=[0,1], # Only use first two columns
-        names=['chrom', 'length'],
-        dtype={'chrom': str, 'length': int}
-    )
-    return chrom
-
-def gene_coordinates(anno: pd.DataFrame, chrom_lengths: dict) -> pd.DataFrame:
-    """Get various useful coordinates for each gene
-
-    Start and end are extended by 1kb on each side to include upstream and
-    downstream regions.
-    
-    Args:
-        anno: DataFrame that includes columns 'gene_id', 'seqname', 'start',
-          'end', and 'strand'. Each row represents an exonic region.
-        chrom_lengths: Dictionary of chromosome lengths to restrict noncoding
-          extensions at the ends of chromosomes
-
-    Returns:
-        DataFrame with index 'gene_id' and columns 'seqname', 'window_start',
-        'window_end', 'strand', and 'tss'
-    """
-    def gene_coord_single(anno: pd.DataFrame, chrom_lengths: dict) -> pd.DataFrame:
-        """Get various useful coordinates for one gene"""
-        seqname = anno['seqname'].iloc[0]
-        strand = anno['strand'].iloc[0]
-        start = anno['start'].min()
-        end = anno['end'].max()
-        tss = start if strand == '+' else end
-        window_start = max(0, start - 1000)
-        window_end = min(end + 1000, chrom_lengths[seqname])
-        return pd.DataFrame({
-            'seqname': seqname,
-            'window_start': window_start,
-            'window_end': window_end,
-            'strand': strand,
-            'tss': tss,
-        }, index=[0])
-    genes = anno.groupby('gene_id').apply(gene_coord_single, chrom_lengths, include_groups=False)
-    genes = genes.reset_index(level=1, drop=True)
-    genes = genes.sort_values(by='gene_id')
-    return genes
-
 def name_bins_with_gene_coords(bins: pd.DataFrame, genes: pd.DataFrame) -> pd.DataFrame:
     """Name bins with gene-relative coordinates"""
     assert bins['gene_id'].nunique() == 1
@@ -544,12 +463,11 @@ def save_bed(bins: pd.DataFrame, chromosomes: list, genes: pd.DataFrame, outfile
     bins.to_csv(outfile, sep='\t', index=False, header=False)
 
 def adaptive_binning(
-    gtf: Path,
-    chromosomes: Path,
+    gene_file: Path,
+    exon_file: Path,
     outdir: Path,
-    batch_size: int,
-    binning_method: str,
-    bigwig_paths: list,
+    bigwig_paths: list[Path],
+    binning_method: str = 'adaptive_diffvar',
     bins_per_gene: Optional[int] = None,
     min_mean_total_covg: Optional[float] = None,
     max_corr: Optional[float] = None,
@@ -559,12 +477,11 @@ def adaptive_binning(
     """Adaptive binning
     
     Args:
-        gtf: Path to a GTF file with collapsed annotation
-        chromosomes: Path to a tab-delimited file with chromosome name and
-          length in first two columns, no header. Additional columns are
-          ignored.
+        gene_file: Path to a tab-delimited file with columns 'gene_id',
+          'seqname', 'window_start', 'window_end', 'strand', and 'batch'.
+        exon_file: Path to a tab-delimited file with columns 'gene_id',
+          'seqname', 'start', and 'end'. Additional columns are ignored.
         outdir: Directory to save output BED files
-        batch_size: Number of genes per batch
         binning_method: Either 'adaptive_covgcorr', 'adaptive_covgvar', or
           'adaptive_diffvar'
         bigwig_paths: List of paths to bigWig files
@@ -578,21 +495,9 @@ def adaptive_binning(
         max_bin_width: Maximum allowed width for a bin
         batch: Batch number to run, or None to run all batches
     """
-    anno, exons = load_annotations(gtf)
-    chromosomes_df = load_chromosomes(chromosomes)
-    chrom_lengths = dict(zip(chromosomes_df['chrom'], chromosomes_df['length']))
-    chromosomes = list(chromosomes_df['chrom'])
-
-    genes = gene_coordinates(anno, chrom_lengths)
-
-    # Split genes into batches
-    n_batches = math.ceil(genes.shape[0] / batch_size)
-    gene_batch = {}
-    for i, gene_id in enumerate(genes.index):
-        gene_batch[gene_id] = i // batch_size
-    anno['batch'] = [gene_batch[gene_id] for gene_id in anno['gene_id']]
-    genes['batch'] = [gene_batch[gene_id] for gene_id in genes.index]
-    anno = anno.groupby('batch')
+    genes = pd.read_csv(gene_file, sep='\t', index_col=0, dtype={'seqname': str})
+    exons = pd.read_csv(exon_file, sep='\t', dtype={'seqname': str})
+    chromosomes = list(exons['seqname'].unique())
 
     if binning_method == 'adaptive_covgvar':
         var_per_gene = estimate_var_sum_per_gene(genes, bigwig_paths)
@@ -602,34 +507,27 @@ def adaptive_binning(
         var_per_bin = var_per_gene / bins_per_gene
 
     outdir.mkdir(exist_ok=True)
-    batches = range(n_batches) if batch is None else [batch]
+    batches = sorted(genes['batch'].unique()) if batch is None else [batch]
     for batch_id in batches:
         batch_genes = genes.groupby('batch').get_group(batch_id)
         if binning_method == 'adaptive_covgcorr':
             batch_bins = get_adaptive_bins_covgcorr_batch(batch_genes, bigwig_paths, min_mean_total_covg, max_corr)
-            batch_bins = split_large_bins(batch_bins, max_bin_width)
-            batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
         elif binning_method == 'adaptive_covgvar':
             batch_bins = get_adaptive_bins_var_batch(batch_genes, bigwig_paths, var_per_bin)
-            batch_bins = split_large_bins(batch_bins, max_bin_width)
-            batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
         elif binning_method == 'adaptive_diffvar':
             batch_bins = get_adaptive_bins_var_batch(batch_genes, bigwig_paths, var_per_bin, covg_diff=True)
-            batch_bins = split_large_bins(batch_bins, max_bin_width)
-            batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
+        else:
+            raise ValueError(f'Invalid binning method: {binning_method}. Expected one of: adaptive_covgcorr, adaptive_covgvar, adaptive_diffvar')
+        batch_bins = split_large_bins(batch_bins, max_bin_width)
+        batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
         outfile = outdir / f'batch_{batch_id}.bed.gz'
         save_bed(batch_bins, chromosomes, batch_genes, outfile)
         print(f'Saved batch {batch_id} to {outfile}')
 
-    # If batches are run separately, this file will be saved each time.
-    genes.drop(columns='tss', inplace=True)
-    genes.to_csv(outdir / 'genes.tsv', sep='\t', index=True)
-
 def fixed_binning(
-    gtf: Path,
-    chromosomes: Path,
+    gene_file: Path,
+    exon_file: Path,
     outdir: Path,
-    batch_size: int,
     binning_method: str,
     max_bin_width: Optional[int] = None,
     bin_width_coding: Optional[int] = None,
@@ -640,12 +538,11 @@ def fixed_binning(
     """Binning based on annotated regions
     
     Args:
-        gtf: Path to a GTF file with collapsed annotation
-        chromosomes: Path to a tab-delimited file with chromosome name and
-          length in first two columns, no header. Additional columns are
-          ignored.
+        gene_file: Path to a tab-delimited file with columns 'gene_id', 'seqname',
+          'window_start', 'window_end', 'strand', and 'batch'.
+        exon_file: Path to a tab-delimited file with columns 'gene_id', 'seqname',
+          'start', and 'end'. Additional columns are ignored.
         outdir: Directory to save output BED files
-        batch_size: Number of genes per batch
         binning_method: Either 'fixed_width' or 'fixed_count'
         max_bin_width: Maximum allowed width for a bin
         bin_width_coding: For 'fixed_width', width of bins for coding (exonic)
@@ -656,39 +553,32 @@ def fixed_binning(
           region.
         batch: Batch number to run, or None to run all batches
     """
-    anno, exons = load_annotations(gtf)
-    chromosomes_df = load_chromosomes(chromosomes)
-    chrom_lengths = dict(zip(chromosomes_df['chrom'], chromosomes_df['length']))
-    chromosomes = list(chromosomes_df['chrom'])
+    genes = pd.read_csv(gene_file, sep='\t', index_col=0, dtype={'seqname': str})
+    exons = pd.read_csv(exon_file, sep='\t', dtype={'seqname': str})
+    chromosomes = list(exons['seqname'].unique())
 
-    genes = gene_coordinates(anno, chrom_lengths)
-
-    # Split genes into batches
-    n_batches = math.ceil(genes.shape[0] / batch_size)
-    gene_batch = {}
-    for i, gene_id in enumerate(genes.index):
-        gene_batch[gene_id] = i // batch_size
-    anno['batch'] = [gene_batch[gene_id] for gene_id in anno['gene_id']]
-    genes['batch'] = [gene_batch[gene_id] for gene_id in genes.index]
-    anno = anno.groupby('batch')
+    exons['feature'] = 'exon'
+    # Add batch column to exons by joining with genes
+    exons['batch'] = exons['gene_id'].map(genes['batch'])
+    exons_grp = exons.groupby('batch')
 
     outdir.mkdir(exist_ok=True)
     genes_removed = 0
-    batches = range(n_batches) if batch is None else [batch]
+    batches = range(genes['batch'].nunique()) if batch is None else [batch]
     for batch_id in batches:
         batch_genes = genes.groupby('batch').get_group(batch_id)
-        batch_anno = anno.get_group(batch_id)
+        batch_exons = exons_grp.get_group(batch_id)
         # For each gene, add introns, upstream, and downstream regions:
-        batch_anno = batch_anno.groupby('gene_id').apply(
+        batch_exons = batch_exons.groupby('gene_id').apply(
             lambda x: add_noncoding_regions(x, batch_genes.loc[x.name]),
             include_groups=False
         )
-        batch_anno = batch_anno.reset_index(level='gene_id')
-        batch_anno = batch_anno.sort_values(by=['gene_id', 'start'])
+        batch_exons = batch_exons.reset_index(level='gene_id')
+        batch_exons = batch_exons.sort_values(by=['gene_id', 'start'])
         if binning_method == 'fixed_width':
-            batch_bins = split_regions_bin_width(batch_anno, bin_width_coding, bin_width_noncoding)
+            batch_bins = split_regions_bin_width(batch_exons, bin_width_coding, bin_width_noncoding)
         else:
-            batch_bins = split_regions_n_bins(batch_anno, n_bins_per_region)
+            batch_bins = split_regions_n_bins(batch_exons, n_bins_per_region)
         batch_bins = split_large_bins(batch_bins, max_bin_width)
         batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
 
@@ -701,7 +591,3 @@ def fixed_binning(
         print(f'Saved batch {batch_id} to {outfile}')
     if genes_removed > 0:
         print(f'Removed {genes_removed} genes with no unique exonic regions')
-
-    # If batches are run separately, this file will be saved each time.
-    genes.drop(columns='tss', inplace=True)
-    genes.to_csv(outdir / 'genes.tsv', sep='\t', index=True)

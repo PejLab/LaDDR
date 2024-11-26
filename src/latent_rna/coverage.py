@@ -109,7 +109,7 @@ def covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame) -> pd.D
     for i, (_, row) in enumerate(bigwig_manifest.iterrows()):
         with pyBigWig.open(str(row['path'])) as f:
             for j, (gene_id, pos) in enumerate(bins.index):
-                chrom = bins.loc[(gene_id, pos), 'chrom']
+                chrom = str(bins.loc[(gene_id, pos), 'chrom'])
                 start = bins.loc[(gene_id, pos), 'chrom_start']
                 end = bins.loc[(gene_id, pos), 'chrom_end']
                 try:
@@ -254,7 +254,7 @@ def regress_out_phenos(covg: pd.DataFrame, pheno_files: list) -> pd.DataFrame:
     assert covg.index.equals(prev_index)
     return covg
 
-def prepare(bigwig_manifest: pd.DataFrame, bins_dir: Path, batches: list, pheno_files: list, outdir: Path):
+def prepare_coverage(bigwig_manifest: pd.DataFrame, bins_dir: Path, batches: list, pheno_files: list, outdir: Path):
     """Assemble per-sample coverage, split into batches, and save to numpy binary files
     
     Args:

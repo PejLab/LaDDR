@@ -14,15 +14,14 @@ setup(
     },
     install_requires=[
         "bx-python",
-        "gtfparse==2.5.0",
         "numpy<2",
         "pandas",
         "pyBigWig",
+        "PyYAML",
         "scikit-fda",
         "scikit-learn",
         "statsmodels",
         "tqdm",
-        "PyYAML",
     ],
     package_data={
         "latent_rna.resources": [

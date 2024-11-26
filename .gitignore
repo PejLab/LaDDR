@@ -3,4 +3,4 @@
 __pycache__
 src/latent_rna.egg-info
 examples/data_*
-examples/.snakemake
+examples/snakemake/.snakemake
