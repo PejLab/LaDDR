@@ -5,6 +5,7 @@ from pathlib import Path
 from collections import defaultdict
 import numpy as np
 import pandas as pd
+import pyBigWig
 
 def interval_union(intervals: list[list[int]]) -> list[list[int]]:
     """Get the union of a list of intervals
@@ -171,3 +172,66 @@ def setup(gtf: Path, chrom_file: Path, batch_size: int, outdir: Path) -> pd.Data
         f.write(str(n_batches))
 
     return genes
+
+def compute_sample_scaling_factors(
+        bigwig_manifest: pd.DataFrame,
+        genes: pd.DataFrame,
+        outdir: Path,
+        use_existing: bool = False,
+        n_genes: int = 1000
+) -> None:
+    """Compute per-sample scaling factors based on total coverage.
+    
+    Args:
+        bigwig_manifest: DataFrame with sample and path columns for bigWig files
+        genes: DataFrame with index 'gene_id' and columns 'seqname',
+          'window_start', and 'window_end'
+        outdir: Directory to save scaling factors
+        use_existing: Whether to use the median total coverage and set of genes
+            from the existing scaling_info.txt file, e.g. if running setup to
+            apply existing models to new samples
+        n_genes: Number of random genes to use for computing factors
+    """
+    if use_existing:
+        # Load existing scaling info used to train the models
+        with open(outdir / 'scaling_info.txt', 'r') as f:
+            median_total_coverage = float(f.readline().split(': ')[1])
+            genes_to_use = f.read().splitlines()
+        sample_genes = genes.loc[genes_to_use]
+    else:
+        # Sample random genes to compute factors
+        sample_genes = genes.sample(n=min(n_genes, len(genes)))
+
+    # Get total coverage for sampled genes per sample
+    totals = []
+    for _, row in bigwig_manifest.iterrows():
+        sample_total = 0
+        with pyBigWig.open(str(row['path'])) as bw:
+            for _, gene in sample_genes.iterrows():
+                coverage = bw.stats(
+                    str(gene['seqname']),
+                    gene['window_start'],
+                    gene['window_end'],
+                    type='mean'
+                )[0] or 0
+                sample_total += coverage * (gene['window_end'] - gene['window_start'])
+        totals.append(sample_total)
+
+    # Compute scaling factors (normalize to median)
+    if not use_existing:
+        median_total_coverage = np.median(totals)
+    scaling_factors = np.array(totals) / median_total_coverage
+
+    # Save factors
+    factors = pd.DataFrame({
+        'sample': bigwig_manifest['sample'],
+        'scaling_factor': scaling_factors
+    })
+    factors.to_csv(outdir / 'scaling_factors.tsv', sep='\t', index=False)
+
+    if not use_existing:
+        # Store median total coverage and set of genes to apply scaling to new samples
+        with open(outdir / 'scaling_info.txt', 'w') as f:
+            f.write(f'median_total_coverage: {median_total_coverage}\n')
+            for gene in sample_genes.index:
+                f.write(f'{gene}\n')

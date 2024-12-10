@@ -130,7 +130,12 @@ def load_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, e
                 raise e
     return covg
 
-def get_adaptive_bins_covgcorr_batch(genes: pd.DataFrame, bigwig_paths: list[Path], min_mean_total_covg: float, max_corr: float) -> pd.DataFrame:
+def get_adaptive_bins_covgcorr_batch(
+        genes: pd.DataFrame,
+        bigwig_paths: list[Path],
+        min_mean_total_covg: float,
+        max_corr: float
+) -> pd.DataFrame:
     """Get adaptive bins for each gene in the annotation
     
     Args:
@@ -166,7 +171,12 @@ def get_adaptive_bins_covgcorr_batch(genes: pd.DataFrame, bigwig_paths: list[Pat
     bins = bins.reset_index()
     return bins
 
-def estimate_var_sum_per_gene(genes: pd.DataFrame, bigwig_paths: list[Path], covg_diff: bool = False, pseudocount: float = 8) -> pd.DataFrame:
+def estimate_var_sum_per_gene(
+        genes: pd.DataFrame,
+        bigwig_paths: list[Path],
+        covg_diff: bool = False,
+        pseudocount: float = 8
+) -> pd.DataFrame:
     """Use a subsample of genes to estimate mean sum of variance across a gene
 
     This uses either the variance of log-coverage, or the variance of the diff
@@ -192,7 +202,13 @@ def estimate_var_sum_per_gene(genes: pd.DataFrame, bigwig_paths: list[Path], cov
         total += np.sum(np.var(covg, axis=1))
     return total / genes.shape[0]
 
-def variance_threshold(genes: pd.DataFrame, bigwig_paths: list[Path], bins_per_gene: int, covg_diff: bool = False, pseudocount: float = 8) -> float:
+def variance_threshold(
+        genes: pd.DataFrame,
+        bigwig_paths: list[Path],
+        bins_per_gene: int,
+        covg_diff: bool = False,
+        pseudocount: float = 8
+) -> float:
     """Estimate the variance threshold needed per bin
 
     Due to spikes in variance, especially for diff of log-coverage, a basic

@@ -11,7 +11,7 @@ from .binning import adaptive_binning, fixed_binning, variance_threshold
 from .coverage import prepare_coverage
 from .init import init_project
 from .models import fit, transform
-from .setup import setup
+from .setup import setup, compute_sample_scaling_factors
 
 @dataclass
 class CoverageConfig:
@@ -58,6 +58,7 @@ class FPCAConfig:
 
 @dataclass
 class ModelConfig:
+    use_existing: bool
     var_explained_max: float
     n_pcs_max: int
     use_fpca: bool
@@ -121,6 +122,7 @@ class Config:
                 fixed_count=fixed_count
             ),
             model=ModelConfig(
+                use_existing=data_model.get('use_existing', False),
                 var_explained_max=data_model.get('var_explained_max', 0.8),
                 n_pcs_max=data_model.get('n_pcs_max', 16),
                 use_fpca=data_model.get('use_fpca', False),
@@ -201,6 +203,12 @@ def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):
         )
         with open(project_dir / 'info' / 'var_per_bin.txt', 'w') as f:
             f.write(f'{var_per_bin:g}')
+    compute_sample_scaling_factors(
+        bigwig_manifest=sample_table,
+        genes=genes,
+        outdir=project_dir / 'info',
+        use_existing=config.model.use_existing
+    )
 
 def cli_binning(args: argparse.Namespace, config: Config, project_dir: Path, sample_table: pd.DataFrame):
     """Partition genes into bins for summarizing coverage data"""
@@ -250,6 +258,15 @@ def cli_coverage(args: argparse.Namespace, config: Config, project_dir: Path, sa
         assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
         dataset = datasets[0]
     sample_table = sample_table.loc[sample_table['dataset'] == dataset, :]
+
+    scaling_factors = pd.read_csv(project_dir / 'info' / 'scaling_factors.tsv', sep='\t', index_col='sample')['scaling_factor']
+    missing_samples = set(sample_table['sample']) - set(scaling_factors.index)
+    if missing_samples:
+        raise ValueError(
+            f"The following samples are missing scaling factors: {missing_samples}\n"
+            "This may occur if setup was run with a different set of samples.\n"
+            "If applying existing models to new samples, set model.use_existing to true in the config."
+        )
     if args.batch is not None:
         batches = [args.batch]
     else:
@@ -259,6 +276,7 @@ def cli_coverage(args: argparse.Namespace, config: Config, project_dir: Path, sa
     (project_dir / 'covg_norm').mkdir(exist_ok=True)
     prepare_coverage(
         bigwig_manifest=sample_table,
+        scaling_factors=scaling_factors,
         bins_dir=project_dir / 'gene_bins',
         batches=batches,
         pheno_files=[project_dir / p for p in config.input.pheno_paths],
@@ -267,6 +285,8 @@ def cli_coverage(args: argparse.Namespace, config: Config, project_dir: Path, sa
 
 def cli_fit(args: argparse.Namespace, config: Config, project_dir: Path, sample_table: pd.DataFrame):
     """Fit latent phenotype models to normalized coverage data"""
+    if config.model.use_existing:
+        raise ValueError('Cannot fit models if use_existing is true')
     datasets = sample_table['dataset'].unique().tolist()
     if args.batch is not None:
         batches = [args.batch]

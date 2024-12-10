@@ -37,6 +37,11 @@ binning:
 
 # Model parameters
 model:
+  # Set to true if the samples being processed are different from the ones used
+  # to train the model. In this case, the existing coverage normalization
+  # parameters will be applied to the new samples so they are normalized
+  # consistently with the training data.
+  use_existing: false
   # Maximum variance explained by PCs to keep. Pass 0 or 1 for no variance explained cutoff.
   var_explained_max: 0.8
   # Maximum number of PCs to keep. Pass 0 for no cutoff.

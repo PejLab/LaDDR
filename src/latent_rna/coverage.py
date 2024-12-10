@@ -107,34 +107,42 @@ def covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame) -> pd.D
     """
     covg = np.zeros((bins.shape[0], len(bigwig_manifest)))
     for i, (_, row) in enumerate(bigwig_manifest.iterrows()):
-        with pyBigWig.open(str(row['path'])) as f:
+        with pyBigWig.open(str(row['path'])) as bw:
             for j, (gene_id, pos) in enumerate(bins.index):
                 chrom = str(bins.loc[(gene_id, pos), 'chrom'])
                 start = bins.loc[(gene_id, pos), 'chrom_start']
                 end = bins.loc[(gene_id, pos), 'chrom_end']
                 try:
-                    covg[j, i] = f.stats(chrom, start, end, type='mean', exact=True)[0]
+                    covg[j, i] = bw.stats(chrom, start, end, type='mean', exact=True)[0]
                 except RuntimeError as e:
                     print(f"RuntimeError for {gene_id}, {chrom}:{start}-{end} in file {row['path']}: {e}", flush=True)
     samples = bigwig_manifest['sample'].tolist()
     df = pd.DataFrame(covg, index=bins.index, columns=samples)
     return df
 
-def normalize_coverage(df: pd.DataFrame, bins: pd.DataFrame, pseudocount: float = 8) -> pd.DataFrame:
+def normalize_coverage(
+        df: pd.DataFrame,
+        bins: pd.DataFrame,
+        scaling_factors: pd.Series,
+        pseudocount: float = 8
+) -> pd.DataFrame:
     """Normalize coverage for each gene in one batch.
 
-    1. A pseudocount is added to the mean coverage to allow log-transformation
-       and reduce the impact of noise in low-coverage bins.
-    2. Coverage is normalized to fraction of gene's coverage for each bin, to
-       control for total gene expression and sequencing depth.
-    3. Coverage is normalized to mean fraction of gene's coverage per bp for
-       each bin.
+    1. Adjust for sequencing depth:
+       - Mean coverage per base per bin is converted to total coverage per bin.
+       - Coverage is scaled by pre-computed sample-specific factors.
+       - Coverage is normalized back to mean coverage per base for each bin.
+    2. A pseudocount is added to allow log-transformation and reduce the impact
+       of noise in low-coverage bins.
+    3. Coverage values are log-transformed for variance stabilization.
 
     Args:
         df: The input DataFrame containing mean coverage per bin per sample.
           Rows are bins and columns are samples. Multi-indexed by gene_id and
           pos.
         bins: The input DataFrame containing bin information.
+        scaling_factors: A Series containing scaling factors indexed by sample
+          IDs.
         pseudocount: Pseudocount to add to coverage values (mean coverage per
           bp for each bin) before normalization.
 
@@ -145,16 +153,16 @@ def normalize_coverage(df: pd.DataFrame, bins: pd.DataFrame, pseudocount: float 
         AssertionError: If the input DataFrame contains any NaN values.
     """
     assert df.index.equals(bins.index)
-    # Add pseudocount to mean coverage per bp for each bin
-    df += pseudocount
     # Convert to total coverage per bin
     lengths = bins['chrom_end'] - bins['chrom_start']
     df = df.mul(lengths, axis=0)
-    # Normalize to fraction of gene's coverage for each bin
-    df = df.groupby('gene_id', group_keys=False).apply(lambda x: x.div(x.sum(axis=0), axis=1))
+    # Scale by pre-computed sample-specific factors
+    df = df.div(scaling_factors[df.columns], axis=1)
     assert not df.isna().any().any()
-    # Normalize to mean fraction of gene's coverage per bp for each bin
+    # Normalize back to mean coverage per bp for each bin
     df = df.div(lengths, axis=0)
+    # Enable log-transformation and reduce impact of noise
+    df += pseudocount
     # Variance stabilization
     df = np.log2(df)
     return df
@@ -254,7 +262,14 @@ def regress_out_phenos(covg: pd.DataFrame, pheno_files: list) -> pd.DataFrame:
     assert covg.index.equals(prev_index)
     return covg
 
-def prepare_coverage(bigwig_manifest: pd.DataFrame, bins_dir: Path, batches: list, pheno_files: list, outdir: Path):
+def prepare_coverage(
+        bigwig_manifest: pd.DataFrame,
+        bins_dir: Path,
+        scaling_factors: pd.Series,
+        batches: list,
+        pheno_files: list,
+        outdir: Path
+) -> None:
     """Assemble per-sample coverage, split into batches, and save to numpy binary files
     
     Args:
@@ -263,6 +278,8 @@ def prepare_coverage(bigwig_manifest: pd.DataFrame, bins_dir: Path, batches: lis
         bins_dir: Directory of per-batch BED files containing bin regions. Must
           have start, end and bin ID in 2nd, 3rd, and 4th columns. Rows must
           correspond to rows of corresponding input coverage file.
+        scaling_factors: A Series containing scaling factors indexed by sample
+          IDs.
         batches: List of batch IDs to process. Batch IDs are integers starting
           from 0.
         pheno_files: List of paths to phenotype tables to regress out of the
@@ -278,7 +295,7 @@ def prepare_coverage(bigwig_manifest: pd.DataFrame, bins_dir: Path, batches: lis
         # Sort by gene and position along gene instead of genomic coordinate
         covg = covg.sort_index()
         bins = bins.loc[covg.index, :]
-        covg = normalize_coverage(covg, bins)
+        covg = normalize_coverage(covg, bins, scaling_factors)
         if len(pheno_files) > 0:
             covg = regress_out_phenos(covg, pheno_files)
         outdir.mkdir(exist_ok=True)
