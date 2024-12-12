@@ -10,7 +10,7 @@ import yaml
 from .binning import adaptive_binning, fixed_binning, variance_threshold
 from .coverage import prepare_coverage
 from .init import init_project
-from .models import fit, transform
+from .models import fit, transform, inspect_model
 from .setup import setup, compute_sample_scaling_factors
 
 @dataclass
@@ -144,8 +144,9 @@ def create_parser():
     parser_prepare = subparsers.add_parser('coverage', help='Prepare RNA-seq coverage for a batch of genes')
     parser_fit = subparsers.add_parser('fit', help='Fit latent phenotype models to coverage data')
     parser_transform = subparsers.add_parser('transform', help='Apply fitted models to coverage data')
+    parser_inspect = subparsers.add_parser('inspect', help='Extract model data for visualization and analysis')
 
-    for subparser in [parser_setup, parser_binning, parser_prepare, parser_fit, parser_transform]:
+    for subparser in [parser_setup, parser_binning, parser_prepare, parser_fit, parser_transform, parser_inspect]:
         subparser.add_argument('-c', '--config', type=Path, metavar='FILE', 
             help='Path to project configuration file. Defaults to config.yaml in project directory.')
         subparser.add_argument('-p', '--project-dir', type=Path, default=Path.cwd(), 
@@ -156,6 +157,9 @@ def create_parser():
 
     for subparser in [parser_binning, parser_prepare, parser_fit]:
         subparser.add_argument('-b', '--batch', type=int, metavar='N', help='Batch ID to process. Batch IDs are integers starting from 0. If omitted, all batches will be processed.')
+
+    parser_inspect.add_argument('-g', '--gene-id', type=str, metavar='ID', help='Gene ID of model to inspect.')
+    parser_inspect.add_argument('-d', '--dataset', type=str, metavar='NAME', help='Name of dataset whose phenotypes will be used. The output will include mean coverage for the top and bottom tenth of samples for each PC.')
 
     return parser
 
@@ -316,16 +320,38 @@ def cli_transform(args: argparse.Namespace, project_dir: Path, sample_table: pd.
     with open(project_dir / 'info' / 'n_batches.txt', 'r') as f:
         n_batches = int(f.read())
     print('=== Generating latent phenotypes ===', flush=True)
-    outdir = project_dir / 'phenotypes'
-    outfile = outdir / f'latent_phenos.{dataset}.tsv.gz'
     output = transform(
         norm_covg_dir=project_dir / 'covg_norm' / dataset,
         models_dir=project_dir / 'models',
         n_batches=n_batches
     )
+    outdir = project_dir / 'phenotypes'
+    outfile = outdir / f'latent_phenos.{dataset}.tsv.gz'
     outdir.mkdir(exist_ok=True)
     output.to_csv(outfile, sep='\t', index=False, float_format='%g')
     print(f'Latent phenotypes saved to {outfile}', flush=True)
+
+def cli_inspect(args: argparse.Namespace, project_dir: Path, sample_table: pd.DataFrame):
+    """Extract model data for visualization and analysis"""
+    if args.dataset is not None:
+        dataset = args.dataset
+    else:
+        datasets = sample_table['dataset'].unique().tolist()
+        assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
+        dataset = datasets[0]
+    output = inspect_model(
+        gene_id=args.gene_id,
+        gene_file=project_dir / 'info' / 'genes.tsv',
+        bigwig_manifest=sample_table,
+        norm_covg_dir=project_dir / 'covg_norm' / dataset,
+        models_dir=project_dir / 'models',
+        phenotypes=project_dir / 'phenotypes' / f'latent_phenos.{dataset}.tsv.gz',
+    )
+    outdir = project_dir / 'inspect'
+    outfile = outdir / f'inspect.{args.gene_id}.{dataset}.tsv.gz'
+    outdir.mkdir(exist_ok=True)
+    output.to_csv(outfile, sep='\t', float_format='%g')
+    print(f'Model data saved to {outfile}', flush=True)
 
 def cli():
     """Latent RNA CLI"""
@@ -346,17 +372,16 @@ def cli():
 
     if args.subcommand == 'setup':
         cli_setup(config, project_dir, sample_table)
-
     elif args.subcommand == 'binning':
         cli_binning(args, config, project_dir, sample_table)
-
     elif args.subcommand == 'coverage':
         cli_coverage(args, config, project_dir, sample_table)
     elif args.subcommand == 'fit':
         cli_fit(args, config, project_dir, sample_table)
-
     elif args.subcommand == 'transform':
         cli_transform(args, project_dir, sample_table)
+    elif args.subcommand == 'inspect':
+        cli_inspect(args, project_dir, sample_table)
 
 if __name__ == '__main__':
     cli()

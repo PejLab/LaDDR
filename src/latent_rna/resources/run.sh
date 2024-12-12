@@ -29,3 +29,10 @@ latent-rna transform -d dset2
 # parallel --jobs 3 latent-rna coverage -d dset2 -b {} ::: $batches
 # parallel --jobs 3 latent-rna fit -b {} ::: $batches
 # parallel --jobs 3 latent-rna transform -d {} ::: dset1 dset2
+
+########################
+## Extract model data ##
+########################
+
+latent-rna inspect -g ENSG00000008128 -d dset1
+latent-rna inspect -g ENSG00000008128 -d dset2

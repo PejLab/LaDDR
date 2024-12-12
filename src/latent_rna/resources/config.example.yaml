@@ -2,8 +2,8 @@
 
 # Input files
 input:
-  # GTF annotation file path. Must be the collapsed annotation produced by `collapse_annotation.py`.
-  gtf: ../data_input/collapsed.gtf
+  # GTF annotation file path
+  gtf: ../data_input/Homo_sapiens.GRCh38.106.chr1_0-2Mb.gtf
   # Chromosome lengths file tab-delimited file with chromosome name and length
   # in first two columns, no header. Additional columns are ignored. (e.g.
   # chrNameLength.txt from STAR index or the *.fa.fai genome FASTA index file)

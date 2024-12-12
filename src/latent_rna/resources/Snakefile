@@ -20,6 +20,7 @@ rule all:
         # working_dir / 'covg_norm' / 'dset1' / 'batch_0.npy',
         # working_dir / 'models' / 'models_batch_0.pickle',
         expand(working_dir / 'phenotypes' /'latent_phenos.{dataset}.tsv.gz', dataset=datasets),
+        expand(working_dir / 'inspect' / 'inspect.{gene_id}.{dataset}.tsv.gz', gene_id=['ENSG00000008128'], dataset=datasets),
 
 rule get_gene_bins:
     """Divide gene features into bins"""
@@ -70,4 +71,19 @@ rule get_latent_phenotypes:
     shell:
         """
         latent-rna transform -d {wildcards.dataset}
+        """
+
+rule inspect_model:
+    """Extract model data for visualization"""
+    input:
+        bw = sample_table['path'].tolist(),
+        genes = working_dir / 'info' / 'genes.tsv',
+        covg_norm = expand(str(working_dir / 'covg_norm' / '{{dataset}}' / 'batch_{batch}.npy'), batch=range(N_BATCHES)),
+        models = expand(str(working_dir / 'models' / 'models_batch_{batch}.pickle'), batch=range(N_BATCHES)),
+        phenos = working_dir / 'phenotypes' / 'latent_phenos.{dataset}.tsv.gz',
+    output:
+        inspect = working_dir / 'inspect' / 'inspect.{gene_id}.{dataset}.tsv.gz',
+    shell:
+        """
+        latent-rna inspect -g {wildcards.gene_id} -d {wildcards.dataset}
         """

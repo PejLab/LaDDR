@@ -8,7 +8,7 @@ from tqdm import tqdm
 from pathlib import Path
 import pickle
 from typing import Iterator
-from .coverage import CoverageData
+from .coverage import CoverageData, covg_from_bigwigs
 
 class Model:
     def __init__(self, fpca: bool, fpca_x_values: str, fpca_basis: str):
@@ -264,3 +264,79 @@ def transform(norm_covg_dir: Path, models_dir: dict, n_batches: int) -> pd.DataF
     out = out.reset_index()
     return out
 
+def load_phenos_for_gene(phenotypes: Path, gene_id: str) -> pd.DataFrame:
+    phenos = pd.read_csv(phenotypes, sep='\t', index_col=0)
+    phenos = phenos.loc[phenos.index.get_level_values('gene_id') == gene_id]
+    phenos.reset_index(level='gene_id', drop=True, inplace=True)
+    phenos.set_index('PC', inplace=True)
+    phenos = phenos.T.rename_axis('sample_id')
+    return phenos
+
+def inspect_model(
+    gene_id: str,
+    gene_file: Path,
+    bigwig_manifest: pd.DataFrame,
+    norm_covg_dir: Path,
+    models_dir: Path,
+    phenotypes: Path,
+) -> None:
+    """Extract model data for visualization and analysis.
+    
+    Args:
+        gene_id: Gene ID to extract.
+        gene_file: Path to a tab-delimited file with columns 'gene_id', 'seqname',
+          'window_start', 'window_end', 'strand', and 'batch'.
+        bigwig_manifest: DataFrame containing bigWig manifest. Must have columns
+          sample and path.
+        norm_covg_dir: Directory of per-batch numpy binary files with normalized
+          coverage. Normalized coverage is not used here, but the accompanying
+          bin info files are used to extract coverage from bigWig files.
+        models_dir: Directory of saved models.
+        phenotypes: Latent phenotype table (TSV).
+
+    Returns:
+        DataFrame of model data for the specified gene.
+    """
+    genes = pd.read_csv(gene_file, sep='\t', index_col=0)
+    batch = genes.loc[gene_id, 'batch']
+    bins = pd.read_csv(norm_covg_dir / f'batch_{batch}.bins.tsv.gz', sep='\t', index_col=[0, 1])
+    bins = bins.loc[bins.index.get_level_values('gene_id') == gene_id]
+    covg = covg_from_bigwigs(bigwig_manifest, bins)
+
+    models_file = models_dir / f'models_batch_{batch}.pickle'
+    models = pickle.load(open(models_file, 'rb'))
+    model = models['models'][gene_id]
+
+    phenos = load_phenos_for_gene(phenotypes, gene_id)
+
+    if model.fpca:
+        info = covg.iloc[:, :0]
+        if model.fpca_basis == 'discrete':
+            loadings = model.model.components_.data_matrix.T
+            assert loadings.shape[0] == 1
+            loadings = loadings[0]
+            loadings = pd.DataFrame(loadings, index=info.index, columns=[f'PC{i+1}' for i in range(loadings.shape[1])])
+            info = info.join(loadings)
+        else:
+            print("Warning: Currently unable to extract loadings from fPCA model with basis function.")
+            # loadings = model.model.components_.coefficients.T
+    else:
+        # Combine the mean/std from model.features with loadings from the model
+        loadings = model.model.components_.T
+        loadings = pd.DataFrame(loadings, index=model.features.index, columns=[f'PC{i+1}' for i in range(loadings.shape[1])])
+        info = model.features.join(loadings)
+
+    # Get the coverage mean of the top and bottom tenth of samples per PC
+    n = int(phenos.shape[0] / 10)
+    if n == 0:
+        n = 1
+        print(f"Warning: Phenotypes have fewer than 10 samples. Using 1 sample each for top and bottom tenth.")
+    for pc in phenos.columns:
+        top_tenth = phenos[pc].nlargest(n).index
+        bottom_tenth = phenos[pc].nsmallest(n).index
+        top_mean = covg.loc[:, top_tenth].mean(axis=1)
+        bottom_mean = covg.loc[:, bottom_tenth].mean(axis=1)
+        info[f'top_tenth_{pc}'] = top_mean
+        info[f'bottom_tenth_{pc}'] = bottom_mean
+
+    return info
