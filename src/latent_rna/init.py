@@ -4,6 +4,7 @@ from importlib.resources import open_text
 import yaml
 
 def copy_resource(resource_name: str, outfile: Path):
+    """Copy a resource file to a given output file"""
     with open_text('latent_rna.resources', resource_name) as f:
         content = f.read()
     with open(outfile, 'w') as f:

@@ -60,7 +60,7 @@ A latent phenotype table will be produced for each dataset containing phenotypes
 
 ## Usage
 
-This method involves five main steps as outlined below.
+This method involves five main steps, plus a sixth optional analysis step, as outlined below.
 
 ### 1. Set up gene info etc.
 
@@ -116,3 +116,22 @@ Normalized coverage matrices are loaded, one batch at a time, and transformed us
 ```shell
 latent-rna transform --dataset dset1
 ```
+
+### 6. (Optional) Analyze latent RNA phenotype models
+
+This command inspects the latent RNA phenotype model for a specific gene, and uses raw coverage, stored models, and latent phenotypes:
+
+```shell
+latent-rna inspect -g ENSG00000008128 -d dset1
+```
+
+The output for a PCA model is a table with one row per bin:
+
+```
+gene_id	pos	mean	std	PC1	PC2	...	top_tenth_PC10	bottom_tenth_PC10
+ENSG00000008128	-998	3.55851	0.308595	0.0338629	0.065617	...	0	2
+ENSG00000008128	-987	3.42529	0.289488	0.0031310	0.067382	...	0.882353	2
+ENSG00000008128	-969	3.45428	0.237121	0.0074943	0.071290	...	1	2.52632
+```
+
+The first four columns give the gene ID, bin center position relative to the gene TSS, and mean and standard deviation of normalized coverage used for training, and the principal components. The next columns give the PCA loadings for each saved PC (latent phenotype). Finally, for each latent phenotype, the top and bottom 10% of samples according to their values for that phenotype are identified, and the mean raw coverage in those samples is given. These values can be plotted to visualize the coverage patterns along the gene that each latent phenotype represents.

@@ -198,8 +198,20 @@ def fit_batch(norm_covg_dirs: list, batch: int, var_expl_max: float, n_pcs_max: 
             models['models'][gene_id] = model
     return models
 
-def fit(norm_covg_dirs: list, batches: list, var_expl_max: float, n_pcs_max: int, output_dir: Path, fpca: bool = False, fpca_x_values: str = 'bin', fpca_basis: str = 'discrete'):
+def fit(
+    norm_covg_dirs: list,
+    batches: list,
+    var_expl_max: float,
+    n_pcs_max: int,
+    output_dir: Path,
+    fpca: bool = False,
+    fpca_x_values: str = 'bin',
+    fpca_basis: str = 'discrete',
+):
     """Fit functional PCA models for all genes in one or more batches
+
+    Writes a pickle file (`models_batch_{batch}.pickle`) in `output_dir` for
+    each batch.
     
     Args:
         norm_covg_dirs: List of directories containing normalized coverage data.
@@ -255,6 +267,9 @@ def transform(norm_covg_dir: Path, models_dir: dict, n_batches: int) -> pd.DataF
         models_dir: Directory of saved models to load and use for transformation.
         n_batches: Number of batches in the data. Latent phenotypes from all
           batches will be computed and concatenated.
+
+    Returns:
+        DataFrame of latent phenotypes for all genes.
     """
     out = []
     for batch in range(n_batches):
@@ -265,6 +280,15 @@ def transform(norm_covg_dir: Path, models_dir: dict, n_batches: int) -> pd.DataF
     return out
 
 def load_phenos_for_gene(phenotypes: Path, gene_id: str) -> pd.DataFrame:
+    """Load latent phenotypes for a gene
+    
+    Args:
+        phenotypes: Path to a tab-delimited latent phenotypes file.
+        gene_id: Phenotypes will be subset to those for this gene.
+
+    Returns:
+        DataFrame of latent phenotypes for the specified gene.
+    """
     phenos = pd.read_csv(phenotypes, sep='\t', index_col=0)
     phenos = phenos.loc[phenos.index.get_level_values('gene_id') == gene_id]
     phenos.reset_index(level='gene_id', drop=True, inplace=True)
@@ -279,7 +303,7 @@ def inspect_model(
     norm_covg_dir: Path,
     models_dir: Path,
     phenotypes: Path,
-) -> None:
+) -> pd.DataFrame:
     """Extract model data for visualization and analysis.
     
     Args:

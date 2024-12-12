@@ -57,6 +57,18 @@ class AdaptiveBin:
         return self.mean_total_covg < other.mean_total_covg
 
 def get_adaptive_bins_covgcorr(covg: np.array, min_mean_total_covg: float, max_corr: float) -> tuple:
+    """Get adaptive bins for a single gene using method "adaptive_covgcorr"
+    
+    Args:
+        covg: Coverage data for the gene, shape (n_bins, n_samples)
+        min_mean_total_covg: Minimum allowed mean total coverage per sample for
+          a bin
+        max_corr: Maximum allowed correlation between normalized coverage of
+          adjacent bins
+
+    Returns:
+        Tuple of start and end positions of bins
+    """
     q = PriorityQueue()
     # For normalization, set floor to 1 to avoid division by zero
     gene_covg = np.maximum(np.sum(covg, axis=0), 1)
@@ -136,7 +148,7 @@ def get_adaptive_bins_covgcorr_batch(
         min_mean_total_covg: float,
         max_corr: float
 ) -> pd.DataFrame:
-    """Get adaptive bins for each gene in the annotation
+    """Get adaptive bins for each gene in the annotation using method "adaptive_covgcorr"
     
     Args:
         genes: DataFrame with index 'gene_id' and columns 'seqname',
@@ -191,6 +203,9 @@ def estimate_var_sum_per_gene(
         covg_diff: If True, use the difference in coverage between adjacent bins
         pseudocount: Pseudocount to add to coverage values (mean coverage per
           bp for each bin)
+
+    Returns:
+        Mean sum of variance per bin across all genes
     """
     total = 0
     for gene in genes.itertuples(index=False):
@@ -238,7 +253,13 @@ def variance_threshold(
     new_threshold = initial_threshold * actual_bins_per_gene / bins_per_gene
     return new_threshold
 
-def get_adaptive_bins_var_batch(genes: pd.DataFrame, bigwig_paths: list[Path], var_per_bin: float, covg_diff: bool = False, pseudocount: float = 8) -> pd.DataFrame:
+def get_adaptive_bins_var_batch(
+        genes: pd.DataFrame,
+        bigwig_paths: list[Path],
+        var_per_bin: float,
+        covg_diff: bool = False,
+        pseudocount: float = 8
+) -> pd.DataFrame:
     """Get adaptive bins for all genes based on coverage variance
     
     Args:
@@ -406,7 +427,19 @@ def split_region_n_bins(region: pd.DataFrame, n_bins: int) -> pd.DataFrame:
     return bins
 
 def split_regions_bin_width(anno: pd.DataFrame, bin_width_coding: int, bin_width_noncoding: int) -> pd.DataFrame:
-    """Split each region into bins of a certain width"""
+    """Split each region into bins of a certain width
+    
+    Args:
+        anno: DataFrame with columns 'gene_id', 'seqname', 'start', 'end',
+          'strand', and 'feature'.
+        bin_width_coding: Width of bins for coding regions (feature == 'exon')
+        bin_width_noncoding: Width of bins for noncoding regions (feature !=
+          'exon')
+
+    Returns:
+        DataFrame with one row per bin, with columns 'seqname', 'start', 'end',
+        'strand', 'feature'
+    """
     anno['start2'] = anno['start']
     anno = anno.groupby(['gene_id', 'start2'])
     bins = anno.apply(lambda x: split_region_bin_width(x, bin_width_coding, bin_width_noncoding), include_groups=False)
@@ -415,7 +448,17 @@ def split_regions_bin_width(anno: pd.DataFrame, bin_width_coding: int, bin_width
     return bins
 
 def split_regions_n_bins(anno: pd.DataFrame, n_bins: int) -> pd.DataFrame:
-    """Split each region into a fixed number of equal-sized bins"""
+    """Split each region into a fixed number of equal-sized bins
+    
+    Args:
+        anno: DataFrame with columns 'gene_id', 'seqname', 'start', 'end',
+          'strand', and 'feature'.
+        n_bins: Number of bins to split each region into
+
+    Returns:
+        DataFrame with one row per bin, with columns 'seqname', 'start', 'end',
+        'strand', 'feature'
+    """
     anno['start2'] = anno['start']
     anno = anno.groupby(['gene_id', 'start2'])
     bins = anno.apply(lambda x: split_region_n_bins(x, n_bins), include_groups=False)
@@ -463,7 +506,17 @@ def split_large_bins(anno: pd.DataFrame, max_bin_width: int) -> pd.DataFrame:
 
 
 def bins_overlap_exons(bins: pd.DataFrame, exons: pd.DataFrame) -> Iterator[bool]:
-    """Check if each bin overlaps with an exon of another gene"""
+    """Check if each bin overlaps with an exon of another gene
+    
+    Args:
+        bins: DataFrame with columns 'seqname', 'start', 'end', 'strand',
+          'feature', and 'gene_id'.
+        exons: DataFrame with columns 'gene_id', 'seqname', 'start', and 'end'.
+
+    Returns:
+        Iterator of booleans indicating whether each bin overlaps with an exon
+        of another gene
+    """
     exon_intervals = defaultdict(IntervalTree)
     for i, exon in enumerate(exons.itertuples(index=False)):
         exon_intervals[exon.seqname].add(exon.start, exon.end, [i, exon.gene_id])
@@ -473,7 +526,16 @@ def bins_overlap_exons(bins: pd.DataFrame, exons: pd.DataFrame) -> Iterator[bool
         yield len(overlaps) > 0
 
 def remove_bins_overlapping_exon(bins: pd.DataFrame, exons: pd.DataFrame) -> pd.DataFrame:
-    """Remove bins that overlap with an exon of another gene"""
+    """Remove bins that overlap with an exon of another gene
+    
+    Args:
+        bins: DataFrame with columns 'seqname', 'start', 'end', 'strand',
+          'feature', and 'gene_id'.
+        exons: DataFrame with columns 'gene_id', 'seqname', 'start', and 'end'.
+
+    Returns:
+        DataFrame of filtered bins
+    """
     overlap = np.array(list(bins_overlap_exons(bins, exons)))
     percentage = 100 * sum(overlap) / len(overlap)
     # types_removed = bins.loc[overlap, 'feature'].value_counts()
@@ -483,7 +545,18 @@ def remove_bins_overlapping_exon(bins: pd.DataFrame, exons: pd.DataFrame) -> pd.
     return bins
 
 def name_bins_with_gene_coords(bins: pd.DataFrame, genes: pd.DataFrame) -> pd.DataFrame:
-    """Name bins with gene-relative coordinates"""
+    """Name bins with gene-relative coordinates
+    
+    Args:
+        bins: DataFrame with columns 'seqname', 'start', 'end', 'strand',
+          'feature', and 'gene_id'.
+        genes: DataFrame with columns 'gene_id', 'seqname', 'window_start',
+          'window_end', 'strand', and 'batch'.
+
+    Returns:
+        DataFrame with one row per bin, with columns 'seqname', 'start', 'end',
+        'strand', 'feature', 'gene_id', and 'name'.
+    """
     assert bins['gene_id'].nunique() == 1
     # assert 'exon' in bins['feature'].values
     gene_id = bins['gene_id'].iloc[0]
@@ -499,7 +572,16 @@ def name_bins_with_gene_coords(bins: pd.DataFrame, genes: pd.DataFrame) -> pd.Da
     return bins
 
 def save_bed(bins: pd.DataFrame, chromosomes: list, genes: pd.DataFrame, outfile: Path):
-    """Prepare BED format"""
+    """Prepare BED format for a batch of bins
+    
+    Args:
+        bins: DataFrame with columns 'seqname', 'start', 'end', 'strand',
+          'feature', and 'gene_id'.
+        chromosomes: List of chromosome names
+        genes: DataFrame with columns 'gene_id', 'seqname', 'window_start',
+          'window_end', 'strand', and 'batch'.
+        outfile: Path to save the BED file
+    """
     bins['gene_id2'] = bins['gene_id']
     bins = bins.groupby('gene_id2').apply(name_bins_with_gene_coords, genes, include_groups=False)
     bins = bins[['seqname', 'start', 'end', 'name', 'feature', 'strand']]
@@ -520,6 +602,8 @@ def adaptive_binning(
     max_bin_width: Optional[int] = None,
 ):
     """Adaptive binning based on RNA-seq coverage patterns
+
+    Writes a BED file to `outdir`/`batch_id`.bed.gz for one or more batches.
     
     Args:
         gene_file: Path to a tab-delimited file with columns 'gene_id',
@@ -577,6 +661,8 @@ def fixed_binning(
     n_bins_per_region: Optional[int] = None,
 ):
     """Binning based on annotated regions
+
+    Writes a BED file to `outdir`/`batch_id`.bed.gz for one or more batches.
     
     Args:
         gene_file: Path to a tab-delimited file with columns 'gene_id', 'seqname',

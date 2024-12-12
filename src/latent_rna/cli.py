@@ -131,6 +131,7 @@ class Config:
         )
 
 def create_parser():
+    """Create the CLI parser"""
     parser = argparse.ArgumentParser(description='Fit and/or apply models on feature bin coverage data')
     subparsers = parser.add_subparsers(title='subcommands', dest='subcommand', required=True, help='Choose a subcommand')
 
@@ -164,6 +165,7 @@ def create_parser():
     return parser
 
 def get_sample_table(coverage_config: CoverageConfig) -> pd.DataFrame:
+    """Get a table of samples from a coverage config"""
     if coverage_config.method == 'directory':
         # Get all subdirectories as datasets, excluding hidden ones
         datasets = [d.name for d in coverage_config.directory.glob('*') 
