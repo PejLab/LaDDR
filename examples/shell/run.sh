@@ -34,5 +34,5 @@ latent-rna transform -d dset2
 ## Extract model data ##
 ########################
 
-latent-rna inspect -g ENSG00000008128 -d dset1
-latent-rna inspect -g ENSG00000008128 -d dset2
+# latent-rna inspect -g ENSG00000008128 -d dset1
+# latent-rna inspect -g ENSG00000008128 -d dset2

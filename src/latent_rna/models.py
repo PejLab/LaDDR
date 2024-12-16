@@ -311,7 +311,9 @@ def inspect_model(
         gene_file: Path to a tab-delimited file with columns 'gene_id', 'seqname',
           'window_start', 'window_end', 'strand', and 'batch'.
         bigwig_manifest: DataFrame containing bigWig manifest. Must have columns
-          sample and path.
+          sample and path. It is recommended to include only the samples present
+          in the phenotypes file, since all will be loaded but only those
+          samples will be used.
         norm_covg_dir: Directory of per-batch numpy binary files with normalized
           coverage. Normalized coverage is not used here, but the accompanying
           bin info files are used to extract coverage from bigWig files.

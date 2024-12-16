@@ -96,7 +96,7 @@ By default, binning is determined using coverage data, partitioning each gene in
 For each gene batch, use its bin definitions to get mean coverage per bin for all samples and normalize:
 
 ```shell
-latent-rna prepare --dataset dset1 --batch 0
+latent-rna coverage --dataset dset1 --batch 0
 ```
 
 At this stage you can also provide quantified explicit phenotypes, e.g. from [Pantry](https://github.com/PejLab/Pantry), to regress out. Training and applying models on this residualized coverage data results in "residual" latent RNA phenotypes, which can complement the explicit phenotypes by representing uncharacterized transcriptomic variation.
@@ -135,3 +135,88 @@ ENSG00000008128	-969	3.45428	0.237121	0.0074943	0.071290	...	1	2.52632
 ```
 
 The first four columns give the gene ID, bin center position relative to the gene TSS, and mean and standard deviation of normalized coverage used for training, and the principal components. The next columns give the PCA loadings for each saved PC (latent phenotype). Finally, for each latent phenotype, the top and bottom 10% of samples according to their values for that phenotype are identified, and the mean raw coverage in those samples is given. These values can be plotted to visualize the coverage patterns along the gene that each latent phenotype represents.
+
+### Workflow diagrams
+
+This flowchart shows how the workflow steps fit together:
+
+```mermaid
+flowchart LR
+    init --> setup
+    setup --> binning
+    subgraph Run with Snakemake etc.
+        binning --> coverage
+        coverage --> fit
+        fit --> transform
+        coverage --> transform
+        coverage --> inspect
+        fit --> inspect
+        transform --> inspect
+    end
+```
+
+Here is a more detailed flowchart that includes the type of input and output data for each step:
+
+```mermaid
+flowchart TD
+    init --> config[/"config file (edit as needed)"/]
+    config --> setup
+    gtf[/reference gene annotations/] --> setup
+    bigwig[/bigWig RNA-seq coverage/] --> setup
+    setup --> geneinfo[/processed gene annotations/]
+    setup --> binningparams[/binning parameters/]
+    setup --> covgnormparams[/coverage normalization parameters/]
+    config --> binning
+    bigwig --> binning
+    geneinfo --> binning
+    binningparams --> binning
+    binning --> bins[/gene bin definitions/]
+    config --> coverage
+    bins --> coverage
+    covgnormparams --> coverage
+    coverage --> covg[/binned normalized coverage/]
+    config --> fit
+    covg --> fit
+    fit --> models[/latent phenotype models/]
+    covg --> transform
+    models --> transform
+    transform --> phenotypes[/latent phenotypes/]
+    bigwig --> inspect
+    models --> inspect
+    phenotypes --> inspect
+    inspect --> modelinfo[/model info for plotting/analysis/]
+    classDef step fill:#ffcfff,stroke:#990099
+    classDef data fill:#d5d5f7,stroke:#2929d6
+    classDef input fill:#bdecfc,stroke:#0995c3
+    class init,setup,binning,coverage,fit,transform,inspect step
+    class config,bigwig,data data
+    class gtf,bigwig input
+    style phenotypes fill:#88ffcc,stroke:#009957
+```
+
+This flowchart shows templates of the names of files produced by each step under the default project structure:
+
+```mermaid
+flowchart TD
+    setup --> genebininfo[/"info/genes.tsv info/exons.tsv.gz info/var_per_bin.txt"/]
+    setup --> covgnormparams[/"info/scaling_factors.tsv"/]
+    genebininfo --> binning
+    binning --> bins[/"gene_bins/batch_{batch}.bed.gz"/]
+    bins --> coverage
+    covgnormparams --> coverage
+    coverage --> covg[/"covg_norm/{dataset}/batch_{batch}.npy covg_norm/{dataset}/batch_{batch}.bins.tsv.gz"/]
+    covg --> fit
+    fit --> models[/"models/models_batch_{batch}.pickle"/]
+    models --> transform
+    covg --> transform
+    transform --> phenotypes[/"phenotypes/latent_phenos.{dataset}.tsv.gz"/]
+    models --> inspect
+    phenotypes --> inspect
+    inspect --> modelinfo[/"inspect/inspect.{gene_id}.{dataset}.tsv.gz"/]
+    classDef step fill:#ffcfff,stroke:#990099
+    classDef data fill:#d5d5f7,stroke:#2929d6
+    classDef input fill:#bdecfc,stroke:#0995c3
+    class init,setup,binning,coverage,fit,transform,inspect step
+    class config,bigwig,data data
+    style phenotypes fill:#88ffcc,stroke:#009957
+```

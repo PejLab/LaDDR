@@ -187,7 +187,7 @@ def get_sample_table(coverage_config: CoverageConfig) -> pd.DataFrame:
         return pd.read_csv(coverage_config.manifest, sep='\t', names=['dataset', 'sample', 'path'])
 
 def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):
-    """Process annotations and determine gene batches"""
+    """Process annotations and determine workflow parameters"""
     assert config.input.gtf is not None, 'gtf is required for setup'
     assert config.input.chromosomes is not None, 'chromosomes length file is required for setup'
     genes = setup(
@@ -341,6 +341,7 @@ def cli_inspect(args: argparse.Namespace, project_dir: Path, sample_table: pd.Da
         datasets = sample_table['dataset'].unique().tolist()
         assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
         dataset = datasets[0]
+    sample_table = sample_table.loc[sample_table['dataset'] == dataset, :]
     output = inspect_model(
         gene_id=args.gene_id,
         gene_file=project_dir / 'info' / 'genes.tsv',
