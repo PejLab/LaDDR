@@ -79,8 +79,8 @@ rule latent_rna_transform:
 rule latent_rna_inspect:
     """Extract model data for visualization"""
     input:
-        bw = sample_table['path'].tolist(),
         genes = working_dir / 'info' / 'genes.tsv',
+        covg_norm = expand(str(working_dir / 'covg_norm' / '{{dataset}}' / 'batch_{batch}.npy'), batch=range(N_BATCHES)),
         covg_norm_bins = expand(str(working_dir / 'covg_norm' / '{{dataset}}' / 'batch_{batch}.bins.tsv.gz'), batch=range(N_BATCHES)),
         models = expand(str(working_dir / 'models' / 'models_batch_{batch}.pickle'), batch=range(N_BATCHES)),
         phenos = working_dir / 'phenotypes' / 'latent_phenos.{dataset}.tsv.gz',

@@ -8,7 +8,7 @@ from tqdm import tqdm
 from pathlib import Path
 import pickle
 from typing import Iterator
-from .coverage import CoverageData, covg_from_bigwigs
+from .coverage import CoverageData
 
 class Model:
     def __init__(self, fpca: bool, fpca_x_values: str, fpca_basis: str):
@@ -299,7 +299,6 @@ def load_phenos_for_gene(phenotypes: Path, gene_id: str) -> pd.DataFrame:
 def inspect_model(
     gene_id: str,
     gene_file: Path,
-    bigwig_manifest: pd.DataFrame,
     norm_covg_dir: Path,
     models_dir: Path,
     phenotypes: Path,
@@ -310,13 +309,8 @@ def inspect_model(
         gene_id: Gene ID to extract.
         gene_file: Path to a tab-delimited file with columns 'gene_id', 'seqname',
           'window_start', 'window_end', 'strand', and 'batch'.
-        bigwig_manifest: DataFrame containing bigWig manifest. Must have columns
-          sample and path. It is recommended to include only the samples present
-          in the phenotypes file, since all will be loaded but only those
-          samples will be used.
-        norm_covg_dir: Directory of per-batch numpy binary files with normalized
-          coverage. Normalized coverage is not used here, but the accompanying
-          bin info files are used to extract coverage from bigWig files.
+        norm_covg_dir: Directory of per-batch numpy binary files with binned
+          normalized coverage.
         models_dir: Directory of saved models.
         phenotypes: Latent phenotype table (TSV).
 
@@ -325,9 +319,8 @@ def inspect_model(
     """
     genes = pd.read_csv(gene_file, sep='\t', index_col=0)
     batch = genes.loc[gene_id, 'batch']
-    bins = pd.read_csv(norm_covg_dir / f'batch_{batch}.bins.tsv.gz', sep='\t', index_col=[0, 1])
-    bins = bins.loc[bins.index.get_level_values('gene_id') == gene_id]
-    covg = covg_from_bigwigs(bigwig_manifest, bins)
+    covg = CoverageData([norm_covg_dir], batch).coverage
+    covg = covg.loc[covg.index.get_level_values('gene_id') == gene_id]
 
     models_file = models_dir / f'models_batch_{batch}.pickle'
     models = pickle.load(open(models_file, 'rb'))

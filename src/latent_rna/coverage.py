@@ -122,29 +122,25 @@ def covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame) -> pd.D
 
 def normalize_coverage(
         df: pd.DataFrame,
-        bins: pd.DataFrame,
         scaling_factors: pd.Series,
         pseudocount: float = 8
 ) -> pd.DataFrame:
     """Normalize coverage for each gene in one batch.
 
-    1. Adjust for sequencing depth:
-       - Mean coverage per base per bin is converted to total coverage per bin.
-       - Coverage is scaled by pre-computed sample-specific factors.
-       - Coverage is normalized back to mean coverage per base for each bin.
+    1. Coverage is scaled by pre-computed sample-specific factors to adjust for
+      sequencing depth.
     2. A pseudocount is added to allow log-transformation and reduce the impact
-       of noise in low-coverage bins.
+      of noise in low-coverage bins.
     3. Coverage values are log-transformed for variance stabilization.
 
     Args:
         df: The input DataFrame containing mean coverage per bin per sample.
           Rows are bins and columns are samples. Multi-indexed by gene_id and
           pos.
-        bins: The input DataFrame containing bin information.
         scaling_factors: A Series containing scaling factors indexed by sample
           IDs.
         pseudocount: Pseudocount to add to coverage values (mean coverage per
-          bp for each bin) before normalization.
+          base for each bin) before normalization.
 
     Returns:
         The normalized coverage DataFrame.
@@ -152,15 +148,9 @@ def normalize_coverage(
     Raises:
         AssertionError: If the input DataFrame contains any NaN values.
     """
-    assert df.index.equals(bins.index)
-    # Convert to total coverage per bin
-    lengths = bins['chrom_end'] - bins['chrom_start']
-    df = df.mul(lengths, axis=0)
     # Scale by pre-computed sample-specific factors
     df = df.div(scaling_factors[df.columns], axis=1)
     assert not df.isna().any().any()
-    # Normalize back to mean coverage per bp for each bin
-    df = df.div(lengths, axis=0)
     # Enable log-transformation and reduce impact of noise
     df += pseudocount
     # Variance stabilization
@@ -294,15 +284,14 @@ def prepare_coverage(
         covg = covg_from_bigwigs(bigwig_manifest, bins)
         # Sort by gene and position along gene instead of genomic coordinate
         covg = covg.sort_index()
-        bins = bins.loc[covg.index, :]
-        covg = normalize_coverage(covg, bins, scaling_factors)
+        covg = normalize_coverage(covg, scaling_factors)
         if len(pheno_files) > 0:
             covg = regress_out_phenos(covg, pheno_files)
         outdir.mkdir(exist_ok=True)
         mat = covg.to_numpy()
         np.save(outdir / f'batch_{batch}.npy', mat)
-        b = bins.loc[covg.index, :]
-        b.to_csv(outdir / f'batch_{batch}.bins.tsv.gz', sep='\t')
+        bins = bins.loc[covg.index, :]
+        bins.to_csv(outdir / f'batch_{batch}.bins.tsv.gz', sep='\t')
         # If samples.txt doesn't exist, write it:
         if not (outdir / 'samples.txt').exists():
             with open(outdir / 'samples.txt', 'w') as f:

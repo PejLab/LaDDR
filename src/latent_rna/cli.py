@@ -341,11 +341,9 @@ def cli_inspect(args: argparse.Namespace, project_dir: Path, sample_table: pd.Da
         datasets = sample_table['dataset'].unique().tolist()
         assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
         dataset = datasets[0]
-    sample_table = sample_table.loc[sample_table['dataset'] == dataset, :]
     output = inspect_model(
         gene_id=args.gene_id,
         gene_file=project_dir / 'info' / 'genes.tsv',
-        bigwig_manifest=sample_table,
         norm_covg_dir=project_dir / 'covg_norm' / dataset,
         models_dir=project_dir / 'models',
         phenotypes=project_dir / 'phenotypes' / f'latent_phenos.{dataset}.tsv.gz',

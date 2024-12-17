@@ -134,7 +134,7 @@ ENSG00000008128	-987	3.42529	0.289488	0.0031310	0.067382	...	0.882353	2
 ENSG00000008128	-969	3.45428	0.237121	0.0074943	0.071290	...	1	2.52632
 ```
 
-The first four columns give the gene ID, bin center position relative to the gene TSS, and mean and standard deviation of normalized coverage used for training, and the principal components. The next columns give the PCA loadings for each saved PC (latent phenotype). Finally, for each latent phenotype, the top and bottom 10% of samples according to their values for that phenotype are identified, and the mean raw coverage in those samples is given. These values can be plotted to visualize the coverage patterns along the gene that each latent phenotype represents.
+The first four columns give the gene ID, bin center position relative to the gene TSS, and mean and standard deviation of normalized coverage used for training, and the principal components. The next columns give the PCA loadings for each saved PC (latent phenotype). Finally, for each latent phenotype, the top and bottom 10% of samples according to their values for that phenotype are identified, and the mean log-scaled, normalized coverage in those samples is given. These values can be plotted to visualize the coverage patterns along the gene that each latent phenotype represents.
 
 ### Workflow diagrams
 
@@ -161,8 +161,8 @@ Here is a more detailed flowchart that includes the type of input and output dat
 flowchart TD
     init --> config[/"config file (edit as needed)"/]
     config --> setup
-    gtf[/reference gene annotations/] --> setup
     bigwig[/bigWig RNA-seq coverage/] --> setup
+    gtf[/reference gene annotations/] --> setup
     setup --> geneinfo[/processed gene annotations/]
     setup --> binningparams[/binning parameters/]
     setup --> covgnormparams[/coverage normalization parameters/]
@@ -178,10 +178,10 @@ flowchart TD
     config --> fit
     covg --> fit
     fit --> models[/latent phenotype models/]
-    covg --> transform
     models --> transform
+    covg --> transform
     transform --> phenotypes[/latent phenotypes/]
-    bigwig --> inspect
+    covg --> inspect
     models --> inspect
     phenotypes --> inspect
     inspect --> modelinfo[/model info for plotting/analysis/]
@@ -189,7 +189,7 @@ flowchart TD
     classDef data fill:#d5d5f7,stroke:#2929d6
     classDef input fill:#bdecfc,stroke:#0995c3
     class init,setup,binning,coverage,fit,transform,inspect step
-    class config,bigwig,data data
+    class config,geneinfo,binningparams,covgnormparams,bins,covg,models,phenotypes,modelinfo data
     class gtf,bigwig input
     style phenotypes fill:#88ffcc,stroke:#009957
 ```
@@ -210,13 +210,14 @@ flowchart TD
     models --> transform
     covg --> transform
     transform --> phenotypes[/"phenotypes/latent_phenos.{dataset}.tsv.gz"/]
+    covg --> inspect
     models --> inspect
     phenotypes --> inspect
     inspect --> modelinfo[/"inspect/inspect.{gene_id}.{dataset}.tsv.gz"/]
     classDef step fill:#ffcfff,stroke:#990099
     classDef data fill:#d5d5f7,stroke:#2929d6
     classDef input fill:#bdecfc,stroke:#0995c3
-    class init,setup,binning,coverage,fit,transform,inspect step
-    class config,bigwig,data data
+    class setup,binning,coverage,fit,transform,inspect step
+    class genebininfo,covgnormparams,bins,covg,models,phenotypes,modelinfo data
     style phenotypes fill:#88ffcc,stroke:#009957
 ```
