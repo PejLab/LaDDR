@@ -129,12 +129,12 @@ The output for a PCA model is a table with one row per bin:
 
 ```
 gene_id	pos	mean	std	PC1	PC2	...	top_tenth_PC10	bottom_tenth_PC10
-ENSG00000008128	-998	3.55851	0.308595	0.0338629	0.065617	...	0	2
-ENSG00000008128	-987	3.42529	0.289488	0.0031310	0.067382	...	0.882353	2
-ENSG00000008128	-969	3.45428	0.237121	0.0074943	0.071290	...	1	2.52632
+ENSG00000008128	-998	3.55851	0.308595	0.0338629	0.0656172	...	3	3.36499
+ENSG00000008128	-987	3.42529	0.289488	0.0031310	0.067382	...	3.13462	3.36499
+ENSG00000008128	-969	3.45428	0.237121	0.0074943	0.0712902	...	3.15166	3.44746
 ```
 
-The first four columns give the gene ID, bin center position relative to the gene TSS, and mean and standard deviation of normalized coverage used for training, and the principal components. The next columns give the PCA loadings for each saved PC (latent phenotype). Finally, for each latent phenotype, the top and bottom 10% of samples according to their values for that phenotype are identified, and the mean log-scaled, normalized coverage in those samples is given. These values can be plotted to visualize the coverage patterns along the gene that each latent phenotype represents.
+The first four columns give the gene ID, bin center position relative to the gene TSS, and mean and standard deviation of normalized coverage used for training. (Normalized coverage values are three or higher because coverage is log2-transformed after adding a pseudocount of eight.) The next columns give the PCA loadings for each saved PC (latent phenotype). Finally, for each latent phenotype, the top and bottom 10% of samples according to their values for that phenotype are identified, and the mean (log-scaled, normalized) coverage in those samples is given. These values can be plotted to visualize the coverage patterns along the gene that each latent phenotype represents.
 
 ### Workflow diagrams
 

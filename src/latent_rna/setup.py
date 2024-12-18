@@ -161,15 +161,18 @@ def setup(gtf: Path, chrom_file: Path, batch_size: int, outdir: Path) -> pd.Data
 
     outdir.mkdir(exist_ok=True)
     genes.to_csv(outdir / 'genes.tsv', sep='\t', index=True)
+    print(f"Gene info saved to {outdir / 'genes.tsv'}", flush=True)
 
     exons = exons[['gene_id', 'seqname', 'start', 'end']]
     exons['seqname'] = pd.Categorical(exons['seqname'], categories=chroms, ordered=True)
     # Record chromosome order to sort bin BED files later
     exons = exons.sort_values(by=['seqname', 'gene_id'])
     exons.to_csv(outdir / 'exons.tsv.gz', sep='\t', index=False, compression='gzip')
+    print(f"Exon info saved to {outdir / 'exons.tsv.gz'}", flush=True)
 
     with open(outdir / 'n_batches.txt', 'w') as f:
         f.write(str(n_batches))
+    print(f"Number of batches saved to {outdir / 'n_batches.txt'}", flush=True)
 
     return genes
 
@@ -228,6 +231,7 @@ def compute_sample_scaling_factors(
         'scaling_factor': scaling_factors
     })
     factors.to_csv(outdir / 'scaling_factors.tsv', sep='\t', index=False)
+    print(f"Coverage scaling factors saved to {outdir / 'scaling_factors.tsv'}", flush=True)
 
     if not use_existing:
         # Store median total coverage and set of genes to apply scaling to new samples
@@ -235,3 +239,4 @@ def compute_sample_scaling_factors(
             f.write(f'median_total_coverage: {median_total_coverage}\n')
             for gene in sample_genes.index:
                 f.write(f'{gene}\n')
+        print(f"Coverage scaling info saved to {outdir / 'scaling_info.txt'}", flush=True)

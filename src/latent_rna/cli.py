@@ -190,12 +190,14 @@ def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):
     """Process annotations and determine workflow parameters"""
     assert config.input.gtf is not None, 'gtf is required for setup'
     assert config.input.chromosomes is not None, 'chromosomes length file is required for setup'
+    print('=== Processing annotations ===', flush=True)
     genes = setup(
         gtf=project_dir / config.input.gtf,
         chrom_file=project_dir / config.input.chromosomes,
         batch_size=config.binning.batch_size,
         outdir=project_dir / 'info'
     )
+    print('=== Getting binning and coverage parameters ===', flush=True)
     if config.binning.method in ['adaptive_covgvar', 'adaptive_diffvar']:
         # Use coverage from all datasets, subsample if necessary
         bigwig_paths = [Path(p) for p in sample_table['path'].tolist()]
@@ -209,6 +211,8 @@ def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):
         )
         with open(project_dir / 'info' / 'var_per_bin.txt', 'w') as f:
             f.write(f'{var_per_bin:g}')
+        print(f"Variance per bin saved to {project_dir / 'info' / 'var_per_bin.txt'}", flush=True)
+    print('Computing sample scaling factors...', flush=True)
     compute_sample_scaling_factors(
         bigwig_manifest=sample_table,
         genes=genes,
@@ -218,6 +222,7 @@ def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):
 
 def cli_binning(args: argparse.Namespace, config: Config, project_dir: Path, sample_table: pd.DataFrame):
     """Partition genes into bins for summarizing coverage data"""
+    print('=== Partitioning genes into bins ===', flush=True)
     if config.binning.method in ['adaptive_covgcorr', 'adaptive_covgvar', 'adaptive_diffvar']:
         # Use coverage from all datasets, subsample if necessary
         bigwig_paths = [Path(p) for p in sample_table['path'].tolist()]
@@ -335,12 +340,14 @@ def cli_transform(args: argparse.Namespace, project_dir: Path, sample_table: pd.
 
 def cli_inspect(args: argparse.Namespace, project_dir: Path, sample_table: pd.DataFrame):
     """Extract model data for visualization and analysis"""
+    print(f'=== Extracting model data for {args.gene_id} ===', flush=True)
     if args.dataset is not None:
         dataset = args.dataset
     else:
         datasets = sample_table['dataset'].unique().tolist()
         assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
         dataset = datasets[0]
+    print(f'Using coverage and phenotypes from dataset {dataset}', flush=True)
     output = inspect_model(
         gene_id=args.gene_id,
         gene_file=project_dir / 'info' / 'genes.tsv',
