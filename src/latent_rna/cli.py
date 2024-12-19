@@ -164,27 +164,32 @@ def create_parser():
 
     return parser
 
-def get_sample_table(coverage_config: CoverageConfig) -> pd.DataFrame:
+def get_sample_table(coverage_config: CoverageConfig, project_dir: Path) -> pd.DataFrame:
     """Get a table of samples from a coverage config"""
     if coverage_config.method == 'directory':
         # Get all subdirectories as datasets, excluding hidden ones
-        datasets = [d.name for d in coverage_config.directory.glob('*') 
+        covg_dir = project_dir / coverage_config.directory
+        datasets = [d.name for d in covg_dir.glob('*') 
                    if d.is_dir() and not d.name.startswith('.')]
         # Build table by finding all .bw files in each dataset directory
         rows = []
         for dataset in datasets:
-            dataset_dir = coverage_config.directory / dataset
+            dataset_dir = covg_dir / dataset
             for bw_file in dataset_dir.glob('*.bw'):
                 # Sample ID is filename without .bw extension
                 sample = bw_file.stem
                 rows.append({
                     'dataset': dataset,
                     'sample': sample,
-                    'path': str(bw_file)
+                    'path': str(bw_file.absolute())
                 })
         return pd.DataFrame(rows)
     else:
-        return pd.read_csv(coverage_config.manifest, sep='\t', names=['dataset', 'sample', 'path'])
+        manifest_path = project_dir / coverage_config.manifest
+        df = pd.read_csv(manifest_path, sep='\t', names=['dataset', 'sample', 'path'])
+        # Convert relative paths to absolute paths, preserving existing absolute paths
+        df['path'] = df['path'].apply(lambda p: str((project_dir / p).absolute()) if not Path(p).is_absolute() else p)
+        return df
 
 def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):
     """Process annotations and determine workflow parameters"""
@@ -376,7 +381,7 @@ def cli():
 
     config = Config.from_yaml(config_path)
     project_dir = args.project_dir
-    sample_table = get_sample_table(config.input.coverage)
+    sample_table = get_sample_table(config.input.coverage, project_dir)
 
     if args.subcommand == 'setup':
         cli_setup(config, project_dir, sample_table)
