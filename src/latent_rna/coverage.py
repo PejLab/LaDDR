@@ -80,7 +80,9 @@ def load_bins(binfile: Path) -> pd.DataFrame:
         names=["chrom", "chrom_start", "chrom_end", "bin"],
         index_col="bin",
     )
-    bins.index = bins.index.str.split("_", n=2, expand=True)
+    # Use rsplit to split on the rightmost 2 underscores in case the gene ID
+    # contains underscores.
+    bins.index = bins.index.str.rsplit("_", n=2, expand=True)
     bins.index.set_names(['gene_id', 'start', 'end'], inplace=True)
     bins = bins.reset_index()
     bins['chrom'] = bins['chrom'].astype(str)
@@ -93,7 +95,7 @@ def load_bins(binfile: Path) -> pd.DataFrame:
     return bins
 
 def covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame) -> pd.DataFrame:
-    """Load coverage data from bigWig files
+    """Load binned coverage data from bigWig files
     
     Args:
         bigwig_manifest: DataFrame containing bigWig manifest. Must have columns
@@ -104,18 +106,33 @@ def covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame) -> pd.D
 
     Returns:
         The coverage DataFrame. Rows are bins and columns are sample IDs.
+
+    Raises:
+        ValueError: If any chromosome in the bins is not found in any bigWig file
     """
     covg = np.zeros((bins.shape[0], len(bigwig_manifest)))
     for i, (_, row) in enumerate(bigwig_manifest.iterrows()):
         with pyBigWig.open(str(row['path'])) as bw:
+            # Check that all required chromosomes are in the bigWig file
+            chroms = bw.chroms()
+            unique_chroms = set(bins['chrom'].unique())
+            missing_chroms = [chr for chr in unique_chroms if str(chr) not in chroms]
+            if missing_chroms:
+                available_chroms = list(chroms.keys())
+                raise ValueError(
+                    f"Chromosomes {missing_chroms} not found in bigWig file {row['path']}.\n"
+                    f"Available chromosomes: {available_chroms}"
+                )
+
             for j, (gene_id, pos) in enumerate(bins.index):
                 chrom = str(bins.loc[(gene_id, pos), 'chrom'])
                 start = bins.loc[(gene_id, pos), 'chrom_start']
                 end = bins.loc[(gene_id, pos), 'chrom_end']
-                try:
+                try: # Print interval, then throw error
                     covg[j, i] = bw.stats(chrom, start, end, type='mean', exact=True)[0]
                 except RuntimeError as e:
                     print(f"RuntimeError for {gene_id}, {chrom}:{start}-{end} in file {row['path']}: {e}", flush=True)
+                    raise e
     samples = bigwig_manifest['sample'].tolist()
     df = pd.DataFrame(covg, index=bins.index, columns=samples)
     return df

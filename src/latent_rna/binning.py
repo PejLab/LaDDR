@@ -121,7 +121,7 @@ def get_adaptive_bins_covgcorr(covg: np.array, min_mean_total_covg: float, max_c
     return starts, ends
 
 def load_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, end: int) -> np.array:
-    """Load coverage data from bigWig files
+    """Load base-level coverage data from bigWig files
 
     Args:
         bigwig_paths: List of paths to bigWig files to load
@@ -131,11 +131,21 @@ def load_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, e
 
     Returns:
         Array of shape (end - start, len(bigwig_paths)) with coverage data
+
+    Raises:
+        ValueError: If seqname is not found in any of the bigWig files
     """
     covg = np.zeros((end - start, len(bigwig_paths)))
     for i, path in enumerate(bigwig_paths):
         with pyBigWig.open(str(path)) as bw:
-            try:
+            chroms = bw.chroms()
+            if str(seqname) not in chroms:
+                available_chroms = list(chroms.keys())
+                raise ValueError(
+                    f"Chromosome '{seqname}' not found in bigWig file {path}.\n"
+                    f"Available chromosomes: {available_chroms}"
+                )
+            try: # Print interval, then throw error
                 covg[:, i] = bw.values(str(seqname), start, end)
             except RuntimeError as e:
                 print(f"RuntimeError for {seqname}:{start}-{end} in file {path}: {e}", flush=True)
