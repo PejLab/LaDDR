@@ -4,10 +4,6 @@
 input:
   # GTF annotation file path
   gtf: path/to/annotation.gtf
-  # Chromosome lengths file tab-delimited file with chromosome name and length
-  # in first two columns, no header. Additional columns are ignored. (e.g.
-  # chrNameLength.txt from STAR index or the *.fa.fai genome FASTA index file)
-  chromosomes: path/to/chr_lengths.genome
   # How to specify datasets and samples and locate bigWig coverage files
   coverage:
     # Method to use for locating bigWig files: directory or manifest

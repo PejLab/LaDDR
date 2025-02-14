@@ -22,7 +22,6 @@ class CoverageConfig:
 @dataclass
 class InputConfig:
     gtf: Path
-    chromosomes: Path
     coverage: CoverageConfig
     pheno_paths: List[Path]
 
@@ -109,7 +108,6 @@ class Config:
         return cls(
             input=InputConfig(
                 gtf=Path(data_input['gtf']) if 'gtf' in data_input else None,
-                chromosomes=Path(data_input['chromosomes']) if 'chromosomes' in data_input else None,
                 coverage=coverage,
                 pheno_paths=[Path(p) for p in data_input.get('pheno_paths', [])]
             ),
@@ -194,11 +192,10 @@ def get_sample_table(coverage_config: CoverageConfig, project_dir: Path) -> pd.D
 def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):
     """Process annotations and determine workflow parameters"""
     assert config.input.gtf is not None, 'gtf is required for setup'
-    assert config.input.chromosomes is not None, 'chromosomes length file is required for setup'
     print('=== Processing annotations ===', flush=True)
     genes = setup(
         gtf=project_dir / config.input.gtf,
-        chrom_file=project_dir / config.input.chromosomes,
+        bigwig_manifest=sample_table,
         batch_size=config.binning.batch_size,
         outdir=project_dir / 'info'
     )

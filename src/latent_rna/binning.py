@@ -695,7 +695,6 @@ def fixed_binning(
     chromosomes = list(exons['seqname'].unique())
 
     exons['feature'] = 'exon'
-    # Add batch column to exons by joining with genes
     exons['batch'] = exons['gene_id'].map(genes['batch'])
     exons_grp = exons.groupby('batch')
 

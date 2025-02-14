@@ -128,14 +128,15 @@ def gene_coordinates(exons: pd.DataFrame, chrom_lengths: dict) -> pd.DataFrame:
     genes = genes.sort_values(by='gene_id')
     return genes
 
-def setup(gtf: Path, chrom_file: Path, batch_size: int, outdir: Path) -> pd.DataFrame:
+def setup(gtf: Path, bigwig_manifest: pd.DataFrame, batch_size: int, outdir: Path) -> pd.DataFrame:
     """Process annotations and determine gene batches
 
     Writes genes.tsv, exons.tsv.gz, and n_batches.txt to outdir.
     
     Args:
         gtf: Path to GTF file
-        chrom_file: Path to chromosome lengths file
+        bigwig_manifest: DataFrame containing bigWig manifest. Must have columns
+          sample and path.
         batch_size: Number of genes per batch
         outdir: Path to output directory
 
@@ -144,16 +145,8 @@ def setup(gtf: Path, chrom_file: Path, batch_size: int, outdir: Path) -> pd.Data
         'window_end', 'strand', and 'tss'
     """
     exons = get_exon_regions(gtf)
-    chrom_df = pd.read_csv(
-        chrom_file,
-        sep='\t',
-        header=None,
-        usecols=[0,1], # Only use first two columns
-        names=['chrom', 'length'],
-        dtype={'chrom': str, 'length': int}
-    )
-    chrom_lengths = dict(zip(chrom_df['chrom'], chrom_df['length']))
-    chroms = list(chrom_df['chrom'])
+    with pyBigWig.open(str(bigwig_manifest['path'].iloc[0])) as bw:
+        chrom_lengths = dict(bw.chroms())
 
     genes = gene_coordinates(exons, chrom_lengths)
     n_batches = int(np.ceil(len(genes) / batch_size))
@@ -164,8 +157,6 @@ def setup(gtf: Path, chrom_file: Path, batch_size: int, outdir: Path) -> pd.Data
     print(f"Gene info saved to {outdir / 'genes.tsv'}", flush=True)
 
     exons = exons[['gene_id', 'seqname', 'start', 'end']]
-    exons['seqname'] = pd.Categorical(exons['seqname'], categories=chroms, ordered=True)
-    # Record chromosome order to sort bin BED files later
     exons = exons.sort_values(by=['seqname', 'gene_id'])
     exons.to_csv(outdir / 'exons.tsv.gz', sep='\t', index=False, compression='gzip')
     print(f"Exon info saved to {outdir / 'exons.tsv.gz'}", flush=True)
