@@ -94,7 +94,7 @@ def load_bins(binfile: Path) -> pd.DataFrame:
     bins = bins[['chrom', 'chrom_start', 'chrom_end']]
     return bins
 
-def covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame) -> pd.DataFrame:
+def bin_covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame) -> pd.DataFrame:
     """Load binned coverage data from bigWig files
     
     Args:
@@ -136,6 +136,80 @@ def covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame) -> pd.D
     samples = bigwig_manifest['sample'].tolist()
     df = pd.DataFrame(covg, index=bins.index, columns=samples)
     return df
+
+def base_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, end: int) -> np.array:
+    """Load base-level coverage data for one region from bigWig files
+
+    Args:
+        bigwig_paths: List of paths to bigWig files to load
+        seqname: Chromosome name
+        start: Start position (0-based)
+        end: End position (0-based)
+
+    Returns:
+        Array of shape (end - start, len(bigwig_paths)) with coverage data
+
+    Raises:
+        ValueError: If seqname is not found in any of the bigWig files
+    """
+    covg = np.zeros((end - start, len(bigwig_paths)))
+    for i, path in enumerate(bigwig_paths):
+        with pyBigWig.open(str(path)) as bw:
+            chroms = bw.chroms()
+            if str(seqname) not in chroms:
+                available_chroms = list(chroms.keys())
+                raise ValueError(
+                    f"Chromosome '{seqname}' not found in bigWig file {path}.\n"
+                    f"Available chromosomes: {available_chroms}"
+                )
+            try: # Print interval, then throw error
+                covg[:, i] = bw.values(str(seqname), start, end)
+            except RuntimeError as e:
+                print(f"RuntimeError for {seqname}:{start}-{end} in file {path}: {e}", flush=True)
+                raise e
+    return covg
+
+def gene_covg_from_bigwigs(bigwig_path: Path, gene_df: pd.DataFrame) -> float:
+    """Calculate total mean coverage across genes for a single bigWig file
+
+    Args:
+        bigwig_path: Path to a bigWig file
+        gene_df: DataFrame with columns 'seqname', 'window_start', and 'window_end'
+
+    Returns:
+        Total coverage (sum of mean coverage * length for each gene)
+    """
+    total = 0
+    with pyBigWig.open(str(bigwig_path)) as bw:
+        for _, gene in gene_df.iterrows():
+            coverage = bw.stats(
+                str(gene['seqname']),
+                gene['window_start'],
+                gene['window_end'],
+                type='mean'
+            )[0] or 0
+            total += coverage * (gene['window_end'] - gene['window_start'])
+    return total
+
+def validate_chromosomes(bigwig_path: Path, required_chroms: set[str]) -> None:
+    """Validate that a bigWig file contains all required chromosomes
+
+    Args:
+        bigwig_path: Path to a bigWig file
+        required_chroms: Set of chromosome names that must be present
+
+    Raises:
+        ValueError: If any required chromosome is not found in the bigWig file
+    """
+    with pyBigWig.open(str(bigwig_path)) as bw:
+        chroms = bw.chroms()
+        missing_chroms = [chr for chr in required_chroms if str(chr) not in chroms]
+        if missing_chroms:
+            available_chroms = list(chroms.keys())
+            raise ValueError(
+                f"Chromosomes {missing_chroms} not found in bigWig file {bigwig_path}.\n"
+                f"Available chromosomes: {available_chroms}"
+            )
 
 def normalize_coverage(
         df: pd.DataFrame,
@@ -298,7 +372,7 @@ def prepare_coverage(
         print(f'=== Preparing coverage for batch {batch} ===', flush=True)
         binfile = bins_dir / f'batch_{batch}.bed.gz'
         bins = load_bins(binfile)
-        covg = covg_from_bigwigs(bigwig_manifest, bins)
+        covg = bin_covg_from_bigwigs(bigwig_manifest, bins)
         # Sort by gene and position along gene instead of genomic coordinate
         covg = covg.sort_index()
         covg = normalize_coverage(covg, scaling_factors)

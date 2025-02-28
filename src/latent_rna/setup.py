@@ -6,6 +6,7 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 import pyBigWig
+from .coverage import validate_chromosomes, gene_covg_from_bigwigs
 
 def interval_union(intervals: list[list[int]]) -> list[list[int]]:
     """Get the union of a list of intervals
@@ -185,9 +186,6 @@ def compute_sample_scaling_factors(
             from the existing scaling_info.txt file, e.g. if running setup to
             apply existing models to new samples
         n_genes: Number of random genes to use for computing factors
-
-    Raises:
-        ValueError: If any chromosome in the genes is not found in any bigWig file
     """
     if use_existing:
         # Load existing scaling info used to train the models
@@ -202,28 +200,12 @@ def compute_sample_scaling_factors(
     # Get total coverage for sampled genes per sample
     totals = []
     for _, row in bigwig_manifest.iterrows():
-        # Check that all required chromosomes are in the bigWig file
-        with pyBigWig.open(str(row['path'])) as bw:
-            chroms = bw.chroms()
-            unique_chroms = set(sample_genes['seqname'].unique())
-            missing_chroms = [chr for chr in unique_chroms if str(chr) not in chroms]
-            if missing_chroms:
-                available_chroms = list(chroms.keys())
-                raise ValueError(
-                    f"Chromosomes {missing_chroms} not found in bigWig file {row['path']}.\n"
-                    f"Available chromosomes: {available_chroms}"
-                )
-
-            # Calculate coverage
-            sample_total = 0
-            for _, gene in sample_genes.iterrows():
-                coverage = bw.stats(
-                    str(gene['seqname']),
-                    gene['window_start'],
-                    gene['window_end'],
-                    type='mean'
-                )[0] or 0
-                sample_total += coverage * (gene['window_end'] - gene['window_start'])
+        # Validate chromosomes
+        unique_chroms = set(sample_genes['seqname'].unique())
+        validate_chromosomes(row['path'], unique_chroms)
+        
+        # Calculate coverage
+        sample_total = gene_covg_from_bigwigs(row['path'], sample_genes)
         totals.append(sample_total)
 
     # Compute scaling factors (normalize to median)

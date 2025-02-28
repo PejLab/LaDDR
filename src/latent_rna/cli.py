@@ -185,6 +185,13 @@ def get_sample_table(coverage_config: CoverageConfig, project_dir: Path) -> pd.D
     else:
         manifest_path = project_dir / coverage_config.manifest
         df = pd.read_csv(manifest_path, sep='\t', names=['dataset', 'sample', 'path'])
+        duplicates = df['sample'].duplicated(keep=False)
+        if duplicates.any():
+            duplicate_samples = df[duplicates]
+            raise ValueError(
+                f"Duplicate sample IDs found in manifest file. Sample IDs must be unique.\n"
+                f"Duplicate samples:\n{duplicate_samples.to_string()}"
+            )
         # Convert relative paths to absolute paths, preserving existing absolute paths
         df['path'] = df['path'].apply(lambda p: str((project_dir / p).absolute()) if not Path(p).is_absolute() else p)
         return df

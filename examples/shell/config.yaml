@@ -30,8 +30,8 @@ binning:
   max_bin_width: 1024
   # Parameters for adaptive binning
   adaptive:
-    # Maximum number of coverage samples to use for binning. Samples from all datasets are used, and a random subset is selected if there are more than this number.
-    max_samples: 64
+    # Maximum number of coverage samples to use for binning. Samples from all datasets are used, and a random subset is selected if there are more than this number. These samples are used to calculate variance at each base.
+    max_samples: 256
     # Approximate number of bins to create per gene on average.  
     bins_per_gene: 256
 

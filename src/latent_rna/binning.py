@@ -12,7 +12,7 @@ from typing import Iterator, Optional
 from bx.intervals.intersection import IntervalTree
 import numpy as np
 import pandas as pd
-import pyBigWig
+from .coverage import base_covg_from_bigwigs
 
 class AdaptiveBin:
     """Used for the adaptive_covgcorr binning method"""
@@ -120,38 +120,6 @@ def get_adaptive_bins_covgcorr(covg: np.array, min_mean_total_covg: float, max_c
         current = current.right
     return starts, ends
 
-def load_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, end: int) -> np.array:
-    """Load base-level coverage data from bigWig files
-
-    Args:
-        bigwig_paths: List of paths to bigWig files to load
-        seqname: Chromosome name
-        start: Start position (0-based)
-        end: End position (0-based)
-
-    Returns:
-        Array of shape (end - start, len(bigwig_paths)) with coverage data
-
-    Raises:
-        ValueError: If seqname is not found in any of the bigWig files
-    """
-    covg = np.zeros((end - start, len(bigwig_paths)))
-    for i, path in enumerate(bigwig_paths):
-        with pyBigWig.open(str(path)) as bw:
-            chroms = bw.chroms()
-            if str(seqname) not in chroms:
-                available_chroms = list(chroms.keys())
-                raise ValueError(
-                    f"Chromosome '{seqname}' not found in bigWig file {path}.\n"
-                    f"Available chromosomes: {available_chroms}"
-                )
-            try: # Print interval, then throw error
-                covg[:, i] = bw.values(str(seqname), start, end)
-            except RuntimeError as e:
-                print(f"RuntimeError for {seqname}:{start}-{end} in file {path}: {e}", flush=True)
-                raise e
-    return covg
-
 def get_adaptive_bins_covgcorr_batch(
         genes: pd.DataFrame,
         bigwig_paths: list[Path],
@@ -174,7 +142,7 @@ def get_adaptive_bins_covgcorr_batch(
     """
     def get_adaptive_bins_gene(gene: pd.DataFrame) -> pd.DataFrame:
         seqname, window_start, window_end, strand = gene[['seqname', 'window_start', 'window_end', 'strand']].iloc[0]
-        covg = load_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end)
+        covg = base_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end)
         starts, ends = get_adaptive_bins_covgcorr(covg, min_mean_total_covg, max_corr)
         bins = pd.DataFrame({
             'seqname': seqname,
@@ -220,7 +188,7 @@ def estimate_var_sum_per_gene(
     total = 0
     for gene in genes.itertuples(index=False):
         seqname, window_start, window_end = gene.seqname, gene.window_start, gene.window_end
-        covg = load_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end)
+        covg = base_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end)
         covg = np.log2(covg + pseudocount)
         if covg_diff:
             covg = np.diff(covg, axis=0, append=np.log2(pseudocount))
@@ -302,7 +270,7 @@ def get_adaptive_bins_var_batch(
         return starts, ends
     def get_adaptive_bins_var_gene(gene: pd.DataFrame) -> pd.DataFrame:
         seqname, window_start, window_end, strand = gene[['seqname', 'window_start', 'window_end', 'strand']].iloc[0]
-        covg = load_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end)
+        covg = base_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end)
         starts, ends = get_adaptive_bins_var(covg, var_per_bin)
         bins = pd.DataFrame({
             'seqname': seqname,
