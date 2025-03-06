@@ -1,10 +1,11 @@
-import numpy as np
-import pandas as pd
-from typing import Iterator
-from pathlib import Path
-import pyBigWig
+from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression
 import statsmodels.api as sm
+import numpy as np
+import pandas as pd
+from pathlib import Path
+import pyBigWig
+from typing import Iterator
 
 class CoverageData:
     def __init__(self, norm_covg_dirs: list, batch_id: int):
@@ -252,7 +253,7 @@ def load_phenotypes(pheno_file: Path, samples: list) -> pd.DataFrame:
     """Load phenotype table in BED format
     
     Gene IDs are parsed from the 4th column from the start up to the first
-    non-alphanumeric character. Chromosome, start, and end columns are ignored.
+    double underscore. Chromosome, start, and end columns are ignored.
 
     Args:
         pheno_file: Path to the phenotype table file in BED format.
@@ -273,6 +274,32 @@ def load_phenotypes(pheno_file: Path, samples: list) -> pd.DataFrame:
     assert len(missing) == 0, f'Phenotype table is missing samples: {missing}'
     df = df[samples]
     return df
+
+def load_and_prepare_phenos(pheno_files: list, samples: list, n_pcs: int) -> pd.core.groupby.DataFrameGroupBy:
+    """Load phenotype tables and prepare for regression
+
+    Load phenotype tables, remove principal components, and group by gene ID.
+
+    Args:
+        pheno_files: List of paths to phenotype tables.
+        samples: List of sample IDs to filter phenotypes by.
+        n_pcs: Number of principal components to remove.
+
+    Returns:
+        The prepared phenotype DataFrame grouped by gene ID.
+    """
+    print(f'Loading phenotypes from {len(pheno_files)} file{"" if len(pheno_files) == 1 else "s"} to regress out...', flush=True)
+    phenos = [load_phenotypes(f, samples).reset_index() for f in pheno_files]
+    phenos = pd.concat(phenos, axis=0)
+    # Parse gene IDs from phenotype IDs
+    pheno_genes = phenos['phenotype_id'].str.split('__').str[0]
+    # Phenotype IDs can't be used as index due to duplicates across files
+    phenos = phenos.drop('phenotype_id', axis=1)
+    # Remove covariates using PCA
+    if n_pcs > 0:
+        phenos = remove_pcs_from_phenos(phenos, n_pcs)
+    phenos = phenos.groupby(pheno_genes)
+    return phenos
 
 def regress_out_phenos_single(y: pd.Series, x: np.array) -> pd.DataFrame:
     """Regress out phenotypes from one feature (bin)
@@ -317,25 +344,69 @@ def regress_out_phenos_gene(df: pd.DataFrame, phenos: pd.core.groupby.DataFrameG
         df = df.apply(regress_out_phenos_single, axis=1, args=(x,)) # axis=1 means by row, i.e. index of Series is column names
     return df
 
-def regress_out_phenos(covg: pd.DataFrame, pheno_files: list) -> pd.DataFrame:
+def remove_pcs_from_phenos(phenos: pd.DataFrame, n_pcs: int) -> pd.DataFrame:
+    """Remove principal components from phenotype data
+
+    This corrects for technical covariates and other confounding factors
+    across phenotypes, and keeping more gene-specific variation, before
+    regressing the phenotypes out of the coverage data.
+    
+    Args:
+        phenos: DataFrame of phenotypes (rows) x samples (columns)
+        n_pcs: Number of principal components to remove. If 0, no PCs are removed.
+        
+    Returns:
+        DataFrame of corrected phenotype values with same dimensions as input
+    """
+    print(f'Removing {n_pcs} principal components from phenotype data...', flush=True)
+        
+    # If we have fewer samples than PCs, reduce the number of PCs
+    if phenos.shape[1] < n_pcs:
+        n_pcs = phenos.shape[1] - 1
+        print(f"Warning: Reducing n_pcs to {n_pcs} because we have only {phenos.shape[1]} samples", flush=True)
+        if n_pcs <= 0:
+            print("Cannot perform PCA with too few samples. Returning original data.", flush=True)
+            return phenos
+
+    # Perform PCA on samples
+    pca = PCA(n_components=n_pcs)
+    pc_matrix = pca.fit_transform(phenos.T)  # samples × n_pcs
+    
+    # For each phenotype, regress out the PCs
+    corrected_phenos = phenos.copy()
+    
+    # This approach regresses each phenotype separately against the PCs
+    for i in range(phenos.shape[0]):
+        # Get phenotype values across all samples (should be 1D array with length = number of samples)
+        y = phenos.iloc[i].values
+        
+        # Safety check: ensure dimensions match
+        if len(y) != pc_matrix.shape[0]:
+            print(f"Warning: Dimension mismatch for phenotype {i}. " 
+                  f"Phenotype values: {len(y)}, PC matrix rows: {pc_matrix.shape[0]}")
+            
+        # Fit linear model: phenotype ~ PCs
+        model = LinearRegression().fit(pc_matrix, y)
+        
+        # Calculate residuals (phenotype values after removing PC effect)
+        pc_effects = model.predict(pc_matrix)
+        corrected_phenos.iloc[i] = y - pc_effects
+    
+    print(f'Removed {n_pcs} PCs explaining {pca.explained_variance_ratio_.sum():.2%} of variance', flush=True)
+    
+    return corrected_phenos
+
+def regress_out_phenos(covg: pd.DataFrame, phenos: pd.core.groupby.DataFrameGroupBy) -> pd.DataFrame:
     """Regress out phenotypes from coverage data
     
     Args:
         covg: The input DataFrame containing normalized coverage per bin per
-          sample for one gene.
-        pheno_files: List of paths to phenotype tables.
-
+          sample for multiple genes.
+        phenos: DataFrameGroupBy of phenotypes (rows) x samples (columns),
+          grouped by gene ID.
     Returns:
         The DataFrame of residuals after regressing out phenotypes.
     """
-    print(f'Loading phenotypes from {len(pheno_files)} file{"" if len(pheno_files) == 1 else "s"} to regress out...', flush=True)
-    phenos = [load_phenotypes(f, covg.columns).reset_index() for f in pheno_files]
-    phenos = pd.concat(phenos, axis=0)
-    # Parse gene IDs from phenotype IDs:
-    pheno_genes = phenos['phenotype_id'].str.extract(r'([a-zA-Z0-9]+)')[0]
-    phenos = phenos.drop('phenotype_id', axis=1)
-    phenos = phenos.groupby(pheno_genes)
-    # Regress out phenotypes:
     prev_index = covg.index.copy()
     covg = covg.groupby("gene_id", group_keys=False).apply(
         lambda c: regress_out_phenos_gene(c, phenos, c.name)
@@ -349,7 +420,8 @@ def prepare_coverage(
         scaling_factors: pd.Series,
         batches: list,
         pheno_files: list,
-        outdir: Path
+        outdir: Path,
+        n_pcs: int = 4,
 ) -> None:
     """Assemble per-sample coverage, split into batches, and save to numpy binary files
     
@@ -367,7 +439,13 @@ def prepare_coverage(
           coverage data per gene prior to model input.
         outdir: Directory where per-batch numpy binary files with normalized
           coverage will be written.
+        n_pcs: Number of principal components to remove from phenotype data to
+          account for technical covariates. If 0, no PCs are removed.
     """
+    if len(pheno_files) > 0:
+        samples = bigwig_manifest['sample'].tolist()
+        phenos = load_and_prepare_phenos(pheno_files, samples, n_pcs)
+
     for batch in batches:
         print(f'=== Preparing coverage for batch {batch} ===', flush=True)
         binfile = bins_dir / f'batch_{batch}.bed.gz'
@@ -377,7 +455,7 @@ def prepare_coverage(
         covg = covg.sort_index()
         covg = normalize_coverage(covg, scaling_factors)
         if len(pheno_files) > 0:
-            covg = regress_out_phenos(covg, pheno_files)
+            covg = regress_out_phenos(covg, phenos)
         outdir.mkdir(exist_ok=True)
         mat = covg.to_numpy()
         np.save(outdir / f'batch_{batch}.npy', mat)

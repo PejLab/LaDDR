@@ -15,6 +15,10 @@ input:
     # dataset, sample, path to bigWig file.
     manifest: coverage_manifest.tsv
   # Optional: List of paths to phenotype tables (BED format) to regress out
+  # Files must be in BED format with chromosome, start, end, and phenotype_id,
+  # followed by columns of phenotype values. The phenotype ID must be formatted
+  # as {gene_id} or {gene_id}__{other_info}, so that gene IDs can be parsed and
+  # used to regress them out gene-by-gene.
   # pheno_paths:
   #   - path/to/modality1.bed.gz
   #   - path/to/modality2.bed.gz
