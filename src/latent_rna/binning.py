@@ -164,6 +164,7 @@ def get_adaptive_bins_covgcorr_batch(
 def estimate_var_sum_per_gene(
         genes: pd.DataFrame,
         bigwig_paths: list[Path],
+        median_coverage: float,
         covg_diff: bool = False,
         pseudocount: float = 8
 ) -> pd.DataFrame:
@@ -188,7 +189,7 @@ def estimate_var_sum_per_gene(
     total = 0
     for gene in genes.itertuples(index=False):
         seqname, window_start, window_end = gene.seqname, gene.window_start, gene.window_end
-        covg = base_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end)
+        covg = base_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end, median_coverage)
         covg = np.log2(covg + pseudocount)
         if covg_diff:
             covg = np.diff(covg, axis=0, append=np.log2(pseudocount))
@@ -199,6 +200,7 @@ def variance_threshold(
         genes: pd.DataFrame,
         bigwig_paths: list[Path],
         bins_per_gene: int,
+        median_coverage: float = None,
         covg_diff: bool = False,
         pseudocount: float = 8
 ) -> float:
@@ -215,6 +217,9 @@ def variance_threshold(
           'window_start', 'window_end', 'strand',
         bigwig_paths: List of paths to bigWig files to use for coverage data
         bins_per_gene: Desired number of bins per gene on average
+        median_coverage: Median of sumData across all samples. If provided,
+          coverage values will be scaled by sumData/median_coverage to normalize
+          for sequencing depth. If None, no scaling is applied.
         covg_diff: If True, use the difference in coverage between adjacent bins
         pseudocount: Pseudocount to add to coverage values (mean coverage per
           bp for each bin)
@@ -222,13 +227,15 @@ def variance_threshold(
     Returns:
         Calibrated variance threshold per bin
     """
-    n_genes = min(100, genes.shape[0])
+    n_genes = min(128, genes.shape[0])
     sub_genes = genes.sample(n_genes)
-    var_per_gene = estimate_var_sum_per_gene(sub_genes, bigwig_paths, covg_diff, pseudocount)
+    var_per_gene = estimate_var_sum_per_gene(sub_genes, bigwig_paths, median_coverage, covg_diff, pseudocount)
     initial_threshold = var_per_gene / bins_per_gene
+    print(f'Initial threshold: {initial_threshold}')
     bins = get_adaptive_bins_var_batch(sub_genes, bigwig_paths, initial_threshold, covg_diff, pseudocount)
     actual_bins_per_gene = bins.shape[0] / n_genes
     new_threshold = initial_threshold * actual_bins_per_gene / bins_per_gene
+    print(f'Adjusted threshold: {new_threshold}')
     return new_threshold
 
 def get_adaptive_bins_var_batch(

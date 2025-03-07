@@ -95,8 +95,8 @@ def load_bins(binfile: Path) -> pd.DataFrame:
     bins = bins[['chrom', 'chrom_start', 'chrom_end']]
     return bins
 
-def bin_covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame) -> pd.DataFrame:
-    """Load binned coverage data from bigWig files
+def bin_covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame, median_coverage: float = None) -> pd.DataFrame:
+    """Load binned coverage data from bigWig files and scale by sequencing depth
     
     Args:
         bigwig_manifest: DataFrame containing bigWig manifest. Must have columns
@@ -104,6 +104,9 @@ def bin_covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame) -> 
         bins: DataFrame containing bin information. Rows are bins, indexed by
           gene_id and pos, and columns include chrom, chrom_start, and
           chrom_end.
+        median_coverage: Median of sumData across all samples. If provided,
+          coverage values will be scaled by sumData/median_coverage to normalize
+          for sequencing depth. If None, no scaling is applied.
 
     Returns:
         The coverage DataFrame. Rows are bins and columns are sample IDs.
@@ -125,12 +128,21 @@ def bin_covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame) -> 
                     f"Available chromosomes: {available_chroms}"
                 )
 
+            # Get scaling factor based on bigWig header
+            scaling_factor = 1.0
+            if median_coverage is not None:
+                total_coverage = bw.header()['sumData']
+                if total_coverage > 0:
+                    scaling_factor = total_coverage / median_coverage
+                    
             for j, (gene_id, pos) in enumerate(bins.index):
                 chrom = str(bins.loc[(gene_id, pos), 'chrom'])
                 start = bins.loc[(gene_id, pos), 'chrom_start']
                 end = bins.loc[(gene_id, pos), 'chrom_end']
-                try: # Print interval, then throw error
-                    covg[j, i] = bw.stats(chrom, start, end, type='mean', exact=True)[0]
+                try:
+                    bin_coverage = bw.stats(chrom, start, end, type='mean', exact=True)[0]
+                    if bin_coverage is not None:
+                        covg[j, i] = bin_coverage / scaling_factor
                 except RuntimeError as e:
                     print(f"RuntimeError for {gene_id}, {chrom}:{start}-{end} in file {row['path']}: {e}", flush=True)
                     raise e
@@ -138,7 +150,7 @@ def bin_covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame) -> 
     df = pd.DataFrame(covg, index=bins.index, columns=samples)
     return df
 
-def base_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, end: int) -> np.array:
+def base_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, end: int, median_coverage: float = None) -> np.array:
     """Load base-level coverage data for one region from bigWig files
 
     Args:
@@ -146,6 +158,9 @@ def base_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, e
         seqname: Chromosome name
         start: Start position (0-based)
         end: End position (0-based)
+        median_coverage: Median of sumData across all samples. If provided,
+          coverage values will be scaled by sumData/median_coverage to normalize
+          for sequencing depth. If None, no scaling is applied.
 
     Returns:
         Array of shape (end - start, len(bigwig_paths)) with coverage data
@@ -163,37 +178,27 @@ def base_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, e
                     f"Chromosome '{seqname}' not found in bigWig file {path}.\n"
                     f"Available chromosomes: {available_chroms}"
                 )
+            
+            # Get scaling factor based on bigWig header
+            scaling_factor = 1.0
+            if median_coverage is not None:
+                total_coverage = bw.header()['sumData']
+                if total_coverage > 0:
+                    scaling_factor = total_coverage / median_coverage
+                    
             try: # Print interval, then throw error
-                covg[:, i] = bw.values(str(seqname), start, end)
+                values = bw.values(str(seqname), start, end)
+                covg[:, i] = np.array(values) / scaling_factor if values is not None else 0
             except RuntimeError as e:
                 print(f"RuntimeError for {seqname}:{start}-{end} in file {path}: {e}", flush=True)
                 raise e
     return covg
 
-def gene_covg_from_bigwigs(bigwig_path: Path, gene_df: pd.DataFrame) -> float:
-    """Calculate total mean coverage across genes for a single bigWig file
-
-    Args:
-        bigwig_path: Path to a bigWig file
-        gene_df: DataFrame with columns 'seqname', 'window_start', and 'window_end'
-
-    Returns:
-        Total coverage (sum of mean coverage * length for each gene)
-    """
-    total = 0
-    with pyBigWig.open(str(bigwig_path)) as bw:
-        for _, gene in gene_df.iterrows():
-            coverage = bw.stats(
-                str(gene['seqname']),
-                gene['window_start'],
-                gene['window_end'],
-                type='mean'
-            )[0] or 0
-            total += coverage * (gene['window_end'] - gene['window_start'])
-    return total
-
 def validate_chromosomes(bigwig_path: Path, required_chroms: set[str]) -> None:
     """Validate that a bigWig file contains all required chromosomes
+
+    One issue this checks for is mismatched chromosome formats between the
+    bigWig file and the annotations used for binning.
 
     Args:
         bigwig_path: Path to a bigWig file
@@ -211,43 +216,6 @@ def validate_chromosomes(bigwig_path: Path, required_chroms: set[str]) -> None:
                 f"Chromosomes {missing_chroms} not found in bigWig file {bigwig_path}.\n"
                 f"Available chromosomes: {available_chroms}"
             )
-
-def normalize_coverage(
-        df: pd.DataFrame,
-        scaling_factors: pd.Series,
-        pseudocount: float = 8
-) -> pd.DataFrame:
-    """Normalize coverage for each gene in one batch.
-
-    1. Coverage is scaled by pre-computed sample-specific factors to adjust for
-      sequencing depth.
-    2. A pseudocount is added to allow log-transformation and reduce the impact
-      of noise in low-coverage bins.
-    3. Coverage values are log-transformed for variance stabilization.
-
-    Args:
-        df: The input DataFrame containing mean coverage per bin per sample.
-          Rows are bins and columns are samples. Multi-indexed by gene_id and
-          pos.
-        scaling_factors: A Series containing scaling factors indexed by sample
-          IDs.
-        pseudocount: Pseudocount to add to coverage values (mean coverage per
-          base for each bin) before normalization.
-
-    Returns:
-        The normalized coverage DataFrame.
-
-    Raises:
-        AssertionError: If the input DataFrame contains any NaN values.
-    """
-    # Scale by pre-computed sample-specific factors
-    df = df.div(scaling_factors[df.columns], axis=1)
-    assert not df.isna().any().any()
-    # Enable log-transformation and reduce impact of noise
-    df += pseudocount
-    # Variance stabilization
-    df = np.log2(df)
-    return df
 
 def load_phenotypes(pheno_file: Path, samples: list) -> pd.DataFrame:
     """Load phenotype table in BED format
@@ -417,10 +385,10 @@ def regress_out_phenos(covg: pd.DataFrame, phenos: pd.core.groupby.DataFrameGrou
 def prepare_coverage(
         bigwig_manifest: pd.DataFrame,
         bins_dir: Path,
-        scaling_factors: pd.Series,
         batches: list,
         pheno_files: list,
         outdir: Path,
+        median_coverage: float = None,
         n_pcs: int = 4,
 ) -> None:
     """Assemble per-sample coverage, split into batches, and save to numpy binary files
@@ -431,14 +399,15 @@ def prepare_coverage(
         bins_dir: Directory of per-batch BED files containing bin regions. Must
           have start, end and bin ID in 2nd, 3rd, and 4th columns. Rows must
           correspond to rows of corresponding input coverage file.
-        scaling_factors: A Series containing scaling factors indexed by sample
-          IDs.
         batches: List of batch IDs to process. Batch IDs are integers starting
           from 0.
         pheno_files: List of paths to phenotype tables to regress out of the
           coverage data per gene prior to model input.
         outdir: Directory where per-batch numpy binary files with normalized
           coverage will be written.
+        median_coverage: Median of sumData across all samples. If provided,
+          coverage values will be scaled by sumData/median_coverage to normalize
+          for sequencing depth. If None, no scaling is applied.
         n_pcs: Number of principal components to remove from phenotype data to
           account for technical covariates. If 0, no PCs are removed.
     """
@@ -450,20 +419,29 @@ def prepare_coverage(
         print(f'=== Preparing coverage for batch {batch} ===', flush=True)
         binfile = bins_dir / f'batch_{batch}.bed.gz'
         bins = load_bins(binfile)
-        covg = bin_covg_from_bigwigs(bigwig_manifest, bins)
+        
+        covg = bin_covg_from_bigwigs(bigwig_manifest, bins, median_coverage)
         # Sort by gene and position along gene instead of genomic coordinate
         covg = covg.sort_index()
-        covg = normalize_coverage(covg, scaling_factors)
+        assert not covg.isna().any().any()
+        # Enable log-transformation and reduce impact of noise
+        covg += 8
+        # Variance stabilization
+        covg = np.log2(covg)
+        
         if len(pheno_files) > 0:
             covg = regress_out_phenos(covg, phenos)
+        
         outdir.mkdir(exist_ok=True)
         mat = covg.to_numpy()
         np.save(outdir / f'batch_{batch}.npy', mat)
         bins = bins.loc[covg.index, :]
         bins.to_csv(outdir / f'batch_{batch}.bins.tsv.gz', sep='\t')
+        
         # If samples.txt doesn't exist, write it:
         if not (outdir / 'samples.txt').exists():
             with open(outdir / 'samples.txt', 'w') as f:
                 f.write('\n'.join(covg.columns) + '\n')
+        
         print(f'Coverage saved in {outdir}', flush=True)
 

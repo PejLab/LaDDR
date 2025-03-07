@@ -41,7 +41,7 @@ rule latent_rna_coverage:
     input:
         bw = lambda w: sample_table.loc[sample_table['dataset'] == w.dataset, 'path'].tolist(),
         bins = working_dir / 'gene_bins' / 'batch_{batch}.bed.gz',
-        scaling_factors = working_dir / 'info' / 'scaling_factors.tsv',
+        median_covg = working_dir / 'info' / 'median_coverage.txt',
         phenos = config['input']['pheno_paths'],
     output:
         covg = working_dir / 'covg_norm' / '{dataset}' / 'batch_{batch}.npy',

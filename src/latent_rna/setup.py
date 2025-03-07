@@ -6,7 +6,7 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 import pyBigWig
-from .coverage import validate_chromosomes, gene_covg_from_bigwigs
+from .coverage import validate_chromosomes
 
 def interval_union(intervals: list[list[int]]) -> list[list[int]]:
     """Get the union of a list of intervals
@@ -146,8 +146,11 @@ def setup(gtf: Path, bigwig_manifest: pd.DataFrame, batch_size: int, outdir: Pat
         'window_end', 'strand', and 'tss'
     """
     exons = get_exon_regions(gtf)
-    with pyBigWig.open(str(bigwig_manifest['path'].iloc[0])) as bw:
+    
+    bigwig1 = str(bigwig_manifest['path'].iloc[0])
+    with pyBigWig.open(bigwig1) as bw:
         chrom_lengths = dict(bw.chroms())
+    validate_chromosomes(bigwig1, set(exons['seqname']))
 
     genes = gene_coordinates(exons, chrom_lengths)
     n_batches = int(np.ceil(len(genes) / batch_size))
@@ -166,65 +169,15 @@ def setup(gtf: Path, bigwig_manifest: pd.DataFrame, batch_size: int, outdir: Pat
         f.write(str(n_batches))
     print(f"Number of batches saved to {outdir / 'n_batches.txt'}", flush=True)
 
+    # Calculate median sum of coverage from bigWig headers
+    coverage_sums = []
+    for path in bigwig_manifest['path']:
+        with pyBigWig.open(str(path)) as bw:
+            coverage_sums.append(bw.header()['sumData'])
+    median_coverage = np.median(coverage_sums)
+    with open(outdir / 'median_coverage.txt', 'w') as f:
+        f.write(str(median_coverage))
+    print(f"Median sum of coverage ({median_coverage}) saved to {outdir / 'median_coverage.txt'}", flush=True)
+
     return genes
 
-def compute_sample_scaling_factors(
-        bigwig_manifest: pd.DataFrame,
-        genes: pd.DataFrame,
-        outdir: Path,
-        use_existing: bool = False,
-        n_genes: int = 1000
-) -> None:
-    """Compute per-sample scaling factors based on total coverage.
-    
-    Args:
-        bigwig_manifest: DataFrame with sample and path columns for bigWig files
-        genes: DataFrame with index 'gene_id' and columns 'seqname',
-          'window_start', and 'window_end'
-        outdir: Directory to save scaling factors
-        use_existing: Whether to use the median total coverage and set of genes
-            from the existing scaling_info.txt file, e.g. if running setup to
-            apply existing models to new samples
-        n_genes: Number of random genes to use for computing factors
-    """
-    if use_existing:
-        # Load existing scaling info used to train the models
-        with open(outdir / 'scaling_info.txt', 'r') as f:
-            median_total_coverage = float(f.readline().split(': ')[1])
-            genes_to_use = f.read().splitlines()
-        sample_genes = genes.loc[genes_to_use]
-    else:
-        # Sample random genes to compute factors
-        sample_genes = genes.sample(n=min(n_genes, len(genes)))
-
-    # Get total coverage for sampled genes per sample
-    totals = []
-    for _, row in bigwig_manifest.iterrows():
-        # Validate chromosomes
-        unique_chroms = set(sample_genes['seqname'].unique())
-        validate_chromosomes(row['path'], unique_chroms)
-        
-        # Calculate coverage
-        sample_total = gene_covg_from_bigwigs(row['path'], sample_genes)
-        totals.append(sample_total)
-
-    # Compute scaling factors (normalize to median)
-    if not use_existing:
-        median_total_coverage = np.median(totals)
-    scaling_factors = np.array(totals) / median_total_coverage
-
-    # Save factors
-    factors = pd.DataFrame({
-        'sample': bigwig_manifest['sample'],
-        'scaling_factor': scaling_factors
-    })
-    factors.to_csv(outdir / 'scaling_factors.tsv', sep='\t', index=False)
-    print(f"Coverage scaling factors saved to {outdir / 'scaling_factors.tsv'}", flush=True)
-
-    if not use_existing:
-        # Store median total coverage and set of genes to apply scaling to new samples
-        with open(outdir / 'scaling_info.txt', 'w') as f:
-            f.write(f'median_total_coverage: {median_total_coverage}\n')
-            for gene in sample_genes.index:
-                f.write(f'{gene}\n')
-        print(f"Coverage scaling info saved to {outdir / 'scaling_info.txt'}", flush=True)

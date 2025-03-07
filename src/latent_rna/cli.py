@@ -11,7 +11,7 @@ from .binning import adaptive_binning, fixed_binning, variance_threshold
 from .coverage import prepare_coverage
 from .init import init_project
 from .models import fit, transform, inspect_model
-from .setup import setup, compute_sample_scaling_factors
+from .setup import setup
 
 @dataclass
 class CoverageConfig:
@@ -199,35 +199,31 @@ def get_sample_table(coverage_config: CoverageConfig, project_dir: Path) -> pd.D
 def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):
     """Process annotations and determine workflow parameters"""
     assert config.input.gtf is not None, 'gtf is required for setup'
-    print('=== Processing annotations ===', flush=True)
+    print('=== Processing annotations, getting batch size, and coverage parameters ===', flush=True)
     genes = setup(
         gtf=project_dir / config.input.gtf,
         bigwig_manifest=sample_table,
         batch_size=config.binning.batch_size,
         outdir=project_dir / 'info'
     )
-    print('=== Getting binning and coverage parameters ===', flush=True)
+    print('=== Getting binning parameters ===', flush=True)
     if config.binning.method in ['adaptive_covgvar', 'adaptive_diffvar']:
         # Use coverage from all datasets, subsample if necessary
         bigwig_paths = [Path(p) for p in sample_table['path'].tolist()]
+        with open(project_dir / 'info' / 'median_coverage.txt', 'r') as f:
+            median_coverage = float(f.read())
         if len(bigwig_paths) > config.binning.adaptive.max_samples:
             bigwig_paths = np.random.choice(bigwig_paths, config.binning.adaptive.max_samples, replace=False)
         var_per_bin = variance_threshold(
             genes=genes,
             bigwig_paths=bigwig_paths,
             bins_per_gene=config.binning.adaptive.bins_per_gene,
+            median_coverage=median_coverage,
             covg_diff=config.binning.method == 'adaptive_diffvar'
         )
         with open(project_dir / 'info' / 'var_per_bin.txt', 'w') as f:
             f.write(f'{var_per_bin:g}')
         print(f"Variance per bin saved to {project_dir / 'info' / 'var_per_bin.txt'}", flush=True)
-    print('Computing sample scaling factors...', flush=True)
-    compute_sample_scaling_factors(
-        bigwig_manifest=sample_table,
-        genes=genes,
-        outdir=project_dir / 'info',
-        use_existing=config.model.use_existing
-    )
 
 def cli_binning(args: argparse.Namespace, config: Config, project_dir: Path, sample_table: pd.DataFrame):
     """Partition genes into bins for summarizing coverage data"""
@@ -279,28 +275,24 @@ def cli_coverage(args: argparse.Namespace, config: Config, project_dir: Path, sa
         dataset = datasets[0]
     sample_table = sample_table.loc[sample_table['dataset'] == dataset, :]
 
-    scaling_factors = pd.read_csv(project_dir / 'info' / 'scaling_factors.tsv', sep='\t', index_col='sample')['scaling_factor']
-    missing_samples = set(sample_table['sample']) - set(scaling_factors.index)
-    if missing_samples:
-        raise ValueError(
-            f"The following samples are missing scaling factors: {missing_samples}\n"
-            "This may occur if setup was run with a different set of samples.\n"
-            "If applying existing models to new samples, set model.use_existing to true in the config."
-        )
     if args.batch is not None:
         batches = [args.batch]
     else:
         with open(project_dir / 'info' / 'n_batches.txt', 'r') as f:
             n_batches = int(f.read())
         batches = list(range(n_batches))
+
+    with open(project_dir / 'info' / 'median_coverage.txt', 'r') as f:
+        median_coverage = float(f.read())
+
     (project_dir / 'covg_norm').mkdir(exist_ok=True)
     prepare_coverage(
         bigwig_manifest=sample_table,
-        scaling_factors=scaling_factors,
         bins_dir=project_dir / 'gene_bins',
         batches=batches,
         pheno_files=[project_dir / p for p in config.input.pheno_paths],
-        outdir=project_dir / 'covg_norm' / dataset
+        outdir=project_dir / 'covg_norm' / dataset,
+        median_coverage=median_coverage
     )
 
 def cli_fit(args: argparse.Namespace, config: Config, project_dir: Path, sample_table: pd.DataFrame):
