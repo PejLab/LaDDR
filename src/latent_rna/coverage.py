@@ -5,7 +5,9 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import pyBigWig
-from typing import Iterator
+from typing import Iterator, Optional, Tuple
+from tqdm import tqdm
+from pandas.core.groupby import DataFrameGroupBy
 
 class CoverageData:
     def __init__(self, norm_covg_dirs: list, batch_id: int):
@@ -27,7 +29,7 @@ class CoverageData:
         self.coverage, self.bins = self.load_coverage(norm_covg_dirs, batch_id)
         self.genes = list(self.bins.groupby('gene_id').groups.keys())
 
-    def load_coverage(self, norm_covg_dirs: list, batch_id: int) -> tuple:
+    def load_coverage(self, norm_covg_dirs: list, batch_id: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Load normalized coverage data for one batch
         
         Args:
@@ -47,14 +49,14 @@ class CoverageData:
         df = pd.DataFrame(mat, index=bins.index, columns=self.samples)
         return df, bins
 
-    def by_gene(self) -> Iterator[tuple]:
+    def by_gene(self) -> Iterator[Tuple[str, pd.DataFrame]]:
         """Iterate over coverage data for each gene
         
         Yields:
             Tuple of gene ID and coverage DataFrame for the gene
         """
         for gene_id, df in self.coverage.groupby('gene_id'):
-            yield gene_id, df
+            yield str(gene_id), df
 
 def load_bins(binfile: Path) -> pd.DataFrame:
     """Load bin information from a BED file
@@ -95,7 +97,7 @@ def load_bins(binfile: Path) -> pd.DataFrame:
     bins = bins[['chrom', 'chrom_start', 'chrom_end']]
     return bins
 
-def bin_covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame, median_coverage: float = None) -> pd.DataFrame:
+def bin_covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame, median_coverage: Optional[float] = None) -> pd.DataFrame:
     """Load binned coverage data from bigWig files and scale by sequencing depth
     
     Args:
@@ -115,7 +117,9 @@ def bin_covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame, med
         ValueError: If any chromosome in the bins is not found in any bigWig file
     """
     covg = np.zeros((bins.shape[0], len(bigwig_manifest)))
-    for i, (_, row) in enumerate(bigwig_manifest.iterrows()):
+    for i, (_, row) in enumerate(tqdm(bigwig_manifest.iterrows(), 
+                                     total=len(bigwig_manifest), 
+                                     desc="Processing bigWig files")):
         with pyBigWig.open(str(row['path'])) as bw:
             # Check that all required chromosomes are in the bigWig file
             chroms = bw.chroms()
@@ -150,7 +154,7 @@ def bin_covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame, med
     df = pd.DataFrame(covg, index=bins.index, columns=samples)
     return df
 
-def base_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, end: int, median_coverage: float = None) -> np.array:
+def base_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, end: int, median_coverage: Optional[float] = None) -> np.ndarray:
     """Load base-level coverage data for one region from bigWig files
 
     Args:
@@ -243,7 +247,7 @@ def load_phenotypes(pheno_file: Path, samples: list) -> pd.DataFrame:
     df = df[samples]
     return df
 
-def load_and_prepare_phenos(pheno_files: list, samples: list, n_pcs: int) -> pd.core.groupby.DataFrameGroupBy:
+def load_and_prepare_phenos(pheno_files: list, samples: list, n_pcs: int) -> DataFrameGroupBy:
     """Load phenotype tables and prepare for regression
 
     Load phenotype tables, remove principal components, and group by gene ID.
@@ -269,7 +273,7 @@ def load_and_prepare_phenos(pheno_files: list, samples: list, n_pcs: int) -> pd.
     phenos = phenos.groupby(pheno_genes)
     return phenos
 
-def regress_out_phenos_single(y: pd.Series, x: np.array) -> pd.DataFrame:
+def regress_out_phenos_single(y: pd.Series, x: np.ndarray) -> pd.Series:
     """Regress out phenotypes from one feature (bin)
 
     Run regression in two stages:
@@ -295,7 +299,7 @@ def regress_out_phenos_single(y: pd.Series, x: np.array) -> pd.DataFrame:
     resid = y - model.predict(x_sig)
     return pd.Series(resid, index=y.index)
 
-def regress_out_phenos_gene(df: pd.DataFrame, phenos: pd.core.groupby.DataFrameGroupBy, gene_id: str) -> pd.DataFrame:
+def regress_out_phenos_gene(df: pd.DataFrame, phenos: DataFrameGroupBy, gene_id: str) -> pd.DataFrame:
     """Regress out phenotypes per gene
     
     Args:
@@ -364,7 +368,7 @@ def remove_pcs_from_phenos(phenos: pd.DataFrame, n_pcs: int) -> pd.DataFrame:
     
     return corrected_phenos
 
-def regress_out_phenos(covg: pd.DataFrame, phenos: pd.core.groupby.DataFrameGroupBy) -> pd.DataFrame:
+def regress_out_phenos(covg: pd.DataFrame, phenos: DataFrameGroupBy) -> pd.DataFrame:
     """Regress out phenotypes from coverage data
     
     Args:
@@ -388,7 +392,7 @@ def prepare_coverage(
         batches: list,
         pheno_files: list,
         outdir: Path,
-        median_coverage: float = None,
+        median_coverage: Optional[float] = None,
         n_pcs: int = 4,
 ) -> None:
     """Assemble per-sample coverage, split into batches, and save to numpy binary files

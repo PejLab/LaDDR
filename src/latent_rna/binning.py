@@ -12,6 +12,7 @@ from typing import Iterator, Optional
 from bx.intervals.intersection import IntervalTree
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 from .coverage import base_covg_from_bigwigs
 
 class AdaptiveBin:
@@ -56,7 +57,7 @@ class AdaptiveBin:
     def __lt__(self, other):
         return self.mean_total_covg < other.mean_total_covg
 
-def get_adaptive_bins_covgcorr(covg: np.array, min_mean_total_covg: float, max_corr: float) -> tuple:
+def get_adaptive_bins_covgcorr(covg: np.ndarray, min_mean_total_covg: float, max_corr: float) -> tuple:
     """Get adaptive bins for a single gene using method "adaptive_covgcorr"
     
     Args:
@@ -157,17 +158,30 @@ def get_adaptive_bins_covgcorr_batch(
         assert bins.iloc[-1].end == window_end
         assert bins.start.unique().shape[0] == bins.shape[0]
         return bins
-    bins = genes.groupby('gene_id').apply(lambda x: get_adaptive_bins_gene(x), include_groups=False)
-    bins = bins.reset_index()
+    
+    # Add tqdm progress indicator for gene processing
+    gene_groups = list(genes.groupby('gene_id'))
+    all_bins = []
+    
+    for gene_id, gene_data in tqdm(gene_groups, desc="Processing genes"):
+        bins = get_adaptive_bins_gene(gene_data)
+        bins['gene_id'] = gene_id
+        all_bins.append(bins)
+    
+    if all_bins:
+        bins = pd.concat(all_bins, ignore_index=True)
+    else:
+        bins = pd.DataFrame(columns=['gene_id', 'seqname', 'start', 'end', 'strand', 'feature'])
+    
     return bins
 
 def estimate_var_sum_per_gene(
         genes: pd.DataFrame,
         bigwig_paths: list[Path],
-        median_coverage: float,
+        median_coverage: Optional[float] = None,
         covg_diff: bool = False,
         pseudocount: float = 8
-) -> pd.DataFrame:
+) -> float:
     """Use a subsample of genes to estimate mean sum of variance across a gene
 
     This uses either the variance of log-coverage, or the variance of the diff
@@ -179,6 +193,9 @@ def estimate_var_sum_per_gene(
         genes: DataFrame with index 'gene_id' and columns 'seqname',
           'window_start', 'window_end', 'strand',
         bigwig_paths: List of paths to bigWig files to use for coverage data
+        median_coverage: Median of sumData across all samples. If provided,
+          coverage values will be scaled by sumData/median_coverage to normalize
+          for sequencing depth. If None, no scaling is applied.
         covg_diff: If True, use the difference in coverage between adjacent bins
         pseudocount: Pseudocount to add to coverage values (mean coverage per
           bp for each bin)
@@ -187,7 +204,7 @@ def estimate_var_sum_per_gene(
         Mean sum of variance per bin across all genes
     """
     total = 0
-    for gene in genes.itertuples(index=False):
+    for gene in tqdm(genes.itertuples(index=False), total=genes.shape[0], desc="Calculating variance per gene"):
         seqname, window_start, window_end = gene.seqname, gene.window_start, gene.window_end
         covg = base_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end, median_coverage)
         covg = np.log2(covg + pseudocount)
@@ -200,7 +217,7 @@ def variance_threshold(
         genes: pd.DataFrame,
         bigwig_paths: list[Path],
         bins_per_gene: int,
-        median_coverage: float = None,
+        median_coverage: Optional[float] = None,
         covg_diff: bool = False,
         pseudocount: float = 8
 ) -> float:
@@ -260,7 +277,7 @@ def get_adaptive_bins_var_batch(
     Returns:
         DataFrame with columns 'gene_id', 'seqname', 'start', 'end', 'strand', 'feature'
     """
-    def get_adaptive_bins_var(covg: np.array, var_per_bin: float) -> tuple:
+    def get_adaptive_bins_var(covg: np.ndarray, var_per_bin: float) -> tuple:
         covg = np.log2(covg + pseudocount)
         if covg_diff:
             covg = np.diff(covg, axis=0, append=np.log2(pseudocount))
@@ -292,8 +309,21 @@ def get_adaptive_bins_var_batch(
         assert bins.iloc[-1].end == window_end
         assert bins.start.unique().shape[0] == bins.shape[0]
         return bins
-    bins = genes.groupby('gene_id').apply(lambda x: get_adaptive_bins_var_gene(x), include_groups=False)
-    bins = bins.reset_index()
+    
+    # Add tqdm progress indicator for gene processing
+    gene_groups = list(genes.groupby('gene_id'))
+    all_bins = []
+    
+    for gene_id, gene_data in tqdm(gene_groups, desc="Processing genes"):
+        bins = get_adaptive_bins_var_gene(gene_data)
+        bins['gene_id'] = gene_id
+        all_bins.append(bins)
+    
+    if all_bins:
+        bins = pd.concat(all_bins, ignore_index=True)
+    else:
+        bins = pd.DataFrame(columns=['gene_id', 'seqname', 'start', 'end', 'strand', 'feature'])
+    
     return bins
 
 def add_noncoding_regions(anno: pd.DataFrame, gene: pd.DataFrame) -> pd.DataFrame:
@@ -357,20 +387,20 @@ def split_region_bin_width(region: pd.DataFrame, bin_width_coding: int, bin_widt
         'strand', 'feature'
     """
     assert region.shape[0] == 1
-    region = list(region.itertuples(index=False))[0]
-    bin_width = bin_width_coding if region.feature == 'exon' else bin_width_noncoding
-    starts = np.arange(region.start, region.end, bin_width)
+    reg = list(region.itertuples(index=False))[0]
+    bin_width = bin_width_coding if reg.feature == 'exon' else bin_width_noncoding
+    starts = np.arange(reg.start, reg.end, bin_width)
     ends = starts + bin_width
-    ends[-1] = region.end
+    ends[-1] = reg.end
     bins = pd.DataFrame({
         'seqname': region.seqname,
         'start': starts,
         'end': ends,
-        'strand': region.strand,
-        'feature': region.feature,
+        'strand': reg.strand,
+        'feature': reg.feature,
     })
-    assert bins.iloc[0].start == region.start
-    assert bins.iloc[-1].end == region.end
+    assert bins.iloc[0].start == reg.start
+    assert bins.iloc[-1].end == reg.end
     assert bins.start.unique().shape[0] == bins.shape[0]
     return bins
 
@@ -386,28 +416,28 @@ def split_region_n_bins(region: pd.DataFrame, n_bins: int) -> pd.DataFrame:
         'strand', 'feature'
     """
     assert region.shape[0] == 1
-    region = list(region.itertuples(index=False))[0]
-    if region.end - region.start < n_bins:
+    reg = list(region.itertuples(index=False))[0]
+    if reg.end - reg.start < n_bins:
         # If too small to split, do one bin per base and return fewer than n_bins bins
-        starts = np.arange(region.start, region.end)
+        starts = np.arange(reg.start, reg.end)
         bins = pd.DataFrame({
-            'seqname': region.seqname,
+            'seqname': reg.seqname,
             'start': starts,
             'end': starts + 1,
-            'strand': region.strand,
-            'feature': region.feature,
+            'strand': reg.strand,
+            'feature': reg.feature,
         })
     else:
-        posns = np.linspace(region.start, region.end, n_bins + 1, dtype=int)
+        posns = np.linspace(reg.start, reg.end, n_bins + 1, dtype=int)
         bins = pd.DataFrame({
-            'seqname': region.seqname,
+            'seqname': reg.seqname,
             'start': posns[:-1],
             'end': posns[1:],
-            'strand': region.strand,
-            'feature': region.feature,
+            'strand': reg.strand,
+            'feature': reg.feature,
         })
-    assert bins.iloc[0].start == region.start
-    assert bins.iloc[-1].end == region.end
+    assert bins.iloc[0].start == reg.start
+    assert bins.iloc[-1].end == reg.end
     assert bins.start.unique().shape[0] == bins.shape[0]
     return bins
 
@@ -426,8 +456,8 @@ def split_regions_bin_width(anno: pd.DataFrame, bin_width_coding: int, bin_width
         'strand', 'feature'
     """
     anno['start2'] = anno['start']
-    anno = anno.groupby(['gene_id', 'start2'])
-    bins = anno.apply(lambda x: split_region_bin_width(x, bin_width_coding, bin_width_noncoding), include_groups=False)
+    anno_grp = anno.groupby(['gene_id', 'start2'])
+    bins = anno_grp.apply(lambda x: split_region_bin_width(x, bin_width_coding, bin_width_noncoding), include_groups=False)
     bins = bins.reset_index(level='gene_id')
     bins = bins.reset_index(drop=True)
     return bins
@@ -445,8 +475,8 @@ def split_regions_n_bins(anno: pd.DataFrame, n_bins: int) -> pd.DataFrame:
         'strand', 'feature'
     """
     anno['start2'] = anno['start']
-    anno = anno.groupby(['gene_id', 'start2'])
-    bins = anno.apply(lambda x: split_region_n_bins(x, n_bins), include_groups=False)
+    anno_grp = anno.groupby(['gene_id', 'start2'])
+    bins = anno_grp.apply(lambda x: split_region_n_bins(x, n_bins), include_groups=False)
     bins = bins.reset_index(level='gene_id')
     bins = bins.reset_index(drop=True)
     return bins
@@ -483,8 +513,8 @@ def split_large_bins(anno: pd.DataFrame, max_bin_width: int) -> pd.DataFrame:
         assert bins.start.unique().shape[0] == bins.shape[0]
         return bins
     anno['start2'] = anno['start']
-    anno = anno.groupby(['gene_id', 'start2'])
-    bins = anno.apply(lambda x: split_large_bin(x), include_groups=False)
+    anno_grp = anno.groupby(['gene_id', 'start2'])
+    bins = anno_grp.apply(split_large_bin, include_groups=False)
     bins = bins.reset_index(level='gene_id')
     bins = bins.reset_index(drop=True)
     return bins
@@ -568,7 +598,7 @@ def save_bed(bins: pd.DataFrame, chromosomes: list, genes: pd.DataFrame, outfile
         outfile: Path to save the BED file
     """
     bins['gene_id2'] = bins['gene_id']
-    bins = bins.groupby('gene_id2').apply(name_bins_with_gene_coords, genes, include_groups=False)
+    bins = bins.groupby('gene_id2').apply(lambda x: name_bins_with_gene_coords(x, genes), include_groups=False)
     bins = bins[['seqname', 'start', 'end', 'name', 'feature', 'strand']]
     bins['seqname'] = pd.Categorical(bins['seqname'], categories=chromosomes, ordered=True)
     bins = bins.sort_values(by=['seqname', 'start'])
@@ -581,7 +611,7 @@ def adaptive_binning(
     bigwig_paths: list[Path],
     batch: Optional[int] = None,
     binning_method: str = 'adaptive_diffvar',
-    var_threshold: Optional[int] = None,
+    var_threshold: Optional[float] = None,
     min_mean_total_covg: Optional[float] = None,
     max_corr: Optional[float] = None,
     max_bin_width: Optional[int] = None,
@@ -621,14 +651,19 @@ def adaptive_binning(
     for batch_id in batches:
         batch_genes = genes.groupby('batch').get_group(batch_id)
         if binning_method == 'adaptive_covgcorr':
+            assert min_mean_total_covg is not None
+            assert max_corr is not None
             batch_bins = get_adaptive_bins_covgcorr_batch(batch_genes, bigwig_paths, min_mean_total_covg, max_corr)
         elif binning_method == 'adaptive_covgvar':
+            assert var_threshold is not None
             batch_bins = get_adaptive_bins_var_batch(batch_genes, bigwig_paths, var_threshold)
         elif binning_method == 'adaptive_diffvar':
+            assert var_threshold is not None
             batch_bins = get_adaptive_bins_var_batch(batch_genes, bigwig_paths, var_threshold, covg_diff=True)
         else:
             raise ValueError(f'Invalid binning method: {binning_method}. Expected one of: adaptive_covgcorr, adaptive_covgvar, adaptive_diffvar')
-        batch_bins = split_large_bins(batch_bins, max_bin_width)
+        if max_bin_width is not None:
+            batch_bins = split_large_bins(batch_bins, max_bin_width)
         batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
         outfile = outdir / f'batch_{batch_id}.bed.gz'
         save_bed(batch_bins, chromosomes, batch_genes, outfile)
@@ -687,10 +722,14 @@ def fixed_binning(
         batch_exons = batch_exons.reset_index(level='gene_id')
         batch_exons = batch_exons.sort_values(by=['gene_id', 'start'])
         if binning_method == 'fixed_width':
+            assert bin_width_coding is not None
+            assert bin_width_noncoding is not None
             batch_bins = split_regions_bin_width(batch_exons, bin_width_coding, bin_width_noncoding)
         else:
+            assert n_bins_per_region is not None
             batch_bins = split_regions_n_bins(batch_exons, n_bins_per_region)
-        batch_bins = split_large_bins(batch_bins, max_bin_width)
+        if max_bin_width is not None:
+            batch_bins = split_large_bins(batch_bins, max_bin_width)
         batch_bins = remove_bins_overlapping_exon(batch_bins, exons)
 
         # Remove any genes with no exon regions remaining:

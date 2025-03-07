@@ -103,6 +103,7 @@ class Model:
             The DataFrame of transformed data, with gene ID and PC number as
             index levels and sample IDs as columns.
         """
+        assert self.model is not None
         # Filter df to include same features as the model:
         if self.fpca:
             x = df.values.T
@@ -236,7 +237,7 @@ def fit(
             pickle.dump(models, f)
         print(f'Models saved to {outfile}', flush=True)
 
-def transform_batch(norm_covg_dir: Path, batch: int, models_dir: dict) -> Iterator[pd.DataFrame]:
+def transform_batch(norm_covg_dir: Path, batch: int, models_dir: Path) -> Iterator[pd.DataFrame]:
     """Apply functional PCA transformation to all genes in a batch
     
     Args:
@@ -258,7 +259,7 @@ def transform_batch(norm_covg_dir: Path, batch: int, models_dir: dict) -> Iterat
         if gene_id in models['models']:
             yield models['models'][gene_id].transform(x)
 
-def transform(norm_covg_dir: Path, models_dir: dict, n_batches: int) -> pd.DataFrame:
+def transform(norm_covg_dir: Path, models_dir: Path, n_batches: int) -> pd.DataFrame:
     """Apply functional PCA transformation to all genes
     
     Args:
@@ -353,8 +354,8 @@ def inspect_model(
     for pc in phenos.columns:
         top_tenth = phenos[pc].nlargest(n).index
         bottom_tenth = phenos[pc].nsmallest(n).index
-        top_mean = covg.loc[:, top_tenth].mean(axis=1)
-        bottom_mean = covg.loc[:, bottom_tenth].mean(axis=1)
+        top_mean = covg.loc[:, list(top_tenth)].mean(axis=1)
+        bottom_mean = covg.loc[:, list(bottom_tenth)].mean(axis=1)
         info[f'top_tenth_{pc}'] = top_mean
         info[f'bottom_tenth_{pc}'] = bottom_mean
 

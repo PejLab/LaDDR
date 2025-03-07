@@ -3,7 +3,7 @@
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 import numpy as np
 import pandas as pd
 import yaml
@@ -21,7 +21,7 @@ class CoverageConfig:
 
 @dataclass
 class InputConfig:
-    gtf: Path
+    gtf: Optional[Path]
     coverage: CoverageConfig
     pheno_paths: List[Path]
 
@@ -206,14 +206,15 @@ def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):
         batch_size=config.binning.batch_size,
         outdir=project_dir / 'info'
     )
-    print('=== Getting binning parameters ===', flush=True)
     if config.binning.method in ['adaptive_covgvar', 'adaptive_diffvar']:
+        print('=== Getting binning parameters ===', flush=True)
         # Use coverage from all datasets, subsample if necessary
-        bigwig_paths = [Path(p) for p in sample_table['path'].tolist()]
         with open(project_dir / 'info' / 'median_coverage.txt', 'r') as f:
             median_coverage = float(f.read())
+        bigwig_paths = sample_table['path'].to_numpy()
         if len(bigwig_paths) > config.binning.adaptive.max_samples:
             bigwig_paths = np.random.choice(bigwig_paths, config.binning.adaptive.max_samples, replace=False)
+        bigwig_paths = [Path(p) for p in bigwig_paths]
         var_per_bin = variance_threshold(
             genes=genes,
             bigwig_paths=bigwig_paths,
@@ -230,9 +231,10 @@ def cli_binning(args: argparse.Namespace, config: Config, project_dir: Path, sam
     print('=== Partitioning genes into bins ===', flush=True)
     if config.binning.method in ['adaptive_covgcorr', 'adaptive_covgvar', 'adaptive_diffvar']:
         # Use coverage from all datasets, subsample if necessary
-        bigwig_paths = [Path(p) for p in sample_table['path'].tolist()]
+        bigwig_paths = sample_table['path'].to_numpy()
         if len(bigwig_paths) > config.binning.adaptive.max_samples:
             bigwig_paths = np.random.choice(bigwig_paths, config.binning.adaptive.max_samples, replace=False)
+        bigwig_paths = [Path(p) for p in bigwig_paths]
         if config.binning.method in {'adaptive_covgvar', 'adaptive_diffvar'}:
             with open(project_dir / 'info' / 'var_per_bin.txt', 'r') as f:
                 var_threshold = float(f.read())

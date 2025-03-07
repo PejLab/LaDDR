@@ -48,8 +48,8 @@ def get_exon_regions(gtf: Path) -> pd.DataFrame:
     tx_to_gene = {}
     tx_exons = defaultdict(list)
     # Record gene info, acceptable transcripts, and exons
-    with opener as gtf:
-        for row in gtf:
+    with opener as f:
+        for row in f:
             if row[0] == '#': continue # skip header
             row = row.strip().split('\t')
             if row[2] == 'gene':
@@ -124,7 +124,7 @@ def gene_coordinates(exons: pd.DataFrame, chrom_lengths: dict) -> pd.DataFrame:
             'strand': strand,
             'tss': tss,
         }, index=[0])
-    genes = exons.groupby('gene_id').apply(gene_coord_single, chrom_lengths, include_groups=False)
+    genes = exons.groupby('gene_id').apply(lambda x: gene_coord_single(x, chrom_lengths), include_groups=False)
     genes = genes.reset_index(level=1, drop=True)
     genes = genes.sort_values(by='gene_id')
     return genes
@@ -147,8 +147,8 @@ def setup(gtf: Path, bigwig_manifest: pd.DataFrame, batch_size: int, outdir: Pat
     """
     exons = get_exon_regions(gtf)
     
-    bigwig1 = str(bigwig_manifest['path'].iloc[0])
-    with pyBigWig.open(bigwig1) as bw:
+    bigwig1 = Path(bigwig_manifest['path'].iloc[0])
+    with pyBigWig.open(str(bigwig1)) as bw:
         chrom_lengths = dict(bw.chroms())
     validate_chromosomes(bigwig1, set(exons['seqname']))
 
