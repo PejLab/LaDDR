@@ -251,6 +251,7 @@ def load_and_prepare_phenos(pheno_files: list, samples: list, n_pcs: int) -> Dat
     """Load phenotype tables and prepare for regression
 
     Load phenotype tables, remove principal components, and group by gene ID.
+    Zero-variance phenotypes are filtered out before grouping by gene.
 
     Args:
         pheno_files: List of paths to phenotype tables.
@@ -258,7 +259,8 @@ def load_and_prepare_phenos(pheno_files: list, samples: list, n_pcs: int) -> Dat
         n_pcs: Number of principal components to remove.
 
     Returns:
-        The prepared phenotype DataFrame grouped by gene ID.
+        The prepared phenotype DataFrame grouped by gene ID. Rows are phenotypes
+        and columns are samples.
     """
     print(f'Loading phenotypes from {len(pheno_files)} file{"" if len(pheno_files) == 1 else "s"} to regress out...', flush=True)
     phenos = [load_phenotypes(f, samples).reset_index() for f in pheno_files]
@@ -270,6 +272,8 @@ def load_and_prepare_phenos(pheno_files: list, samples: list, n_pcs: int) -> Dat
     # Remove covariates using PCA
     if n_pcs > 0:
         phenos = remove_pcs_from_phenos(phenos, n_pcs)
+    # Filter out zero-variance features (rows)
+    phenos = phenos.loc[phenos.var(axis=1) > 0]
     phenos = phenos.groupby(pheno_genes)
     return phenos
 
@@ -289,7 +293,7 @@ def regress_out_phenos_single(y: pd.Series, x: np.ndarray) -> pd.Series:
         The residuals of the regression.
     """
     # Subset to nominally significant regression features
-    x_const = sm.add_constant(x)
+    x_const = sm.add_constant(x, has_constant='add')
     model_all = sm.OLS(y, x_const).fit()
     assert model_all.pvalues.index[0] == 'const'
     x_sig = x[:, model_all.pvalues[1:] < 0.01] # exclude intercept
@@ -306,6 +310,7 @@ def regress_out_phenos_gene(df: pd.DataFrame, phenos: DataFrameGroupBy, gene_id:
         df: The input DataFrame containing normalized coverage per bin per
           sample for one gene.
         phenos: The input DataFrameGroupBy containing phenotypes to regress out.
+          Rows are phenotypes and columns are samples.
         gene_id: The gene ID to process.
 
     Returns:
