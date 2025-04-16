@@ -193,7 +193,12 @@ def get_sample_table(coverage_config: CoverageConfig, project_dir: Path) -> pd.D
                 f"Duplicate samples:\n{duplicate_samples.to_string()}"
             )
         # Convert relative paths to absolute paths, preserving existing absolute paths
-        df['path'] = df['path'].apply(lambda p: str((project_dir / p).absolute()) if not Path(p).is_absolute() else p)
+        if coverage_config.directory:
+            # If directory is provided, paths in manifest are relative to that directory
+            df['path'] = df['path'].apply(lambda p: str((project_dir / coverage_config.directory / p).absolute()) if not Path(p).is_absolute() else p)
+        else:
+            # Otherwise paths are relative to project directory
+            df['path'] = df['path'].apply(lambda p: str((project_dir / p).absolute()) if not Path(p).is_absolute() else p)
         return df
 
 def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):

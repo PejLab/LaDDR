@@ -4,16 +4,20 @@
 input:
   # GTF annotation file path
   gtf: ../data_input/Homo_sapiens.GRCh38.106.chr1_0-2Mb.gtf
+
   # How to specify datasets and samples and locate bigWig coverage files
   coverage:
     # Method to use for locating bigWig files: directory or manifest
     method: manifest
-    # If method is "directory", path of the directory whose contents will be read as {dataset}/{sample}.bw
-    directory: covg_bigwig
+    # Path to directory containing bigWig files
+    # If method is "directory", the datasets and samples will be determined by interpreting this directory's contents as {dataset}/{sample}.bw
+    # If method is "manifest", the paths in the manifest file should be relative to this directory.
+    directory: ../data_input/covg_bigwig
     # If method is "manifest", path to a headerless tab-delimited manifest file with three columns:
     # dataset, sample, path to bigWig file.
     manifest: coverage_manifest.tsv
-  # Optional: File containing paths to phenotype tables to regress out
+
+  # Optional: List of paths to phenotype tables (BED format) to regress out
   # Files must be in BED format with chromosome, start, end, and phenotype_id,
   # followed by columns of phenotype values. The phenotype ID must be formatted
   # as {gene_id} or {gene_id}__{other_info}, so that gene IDs can be parsed and
