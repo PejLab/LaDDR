@@ -293,11 +293,18 @@ def cli_coverage(args: argparse.Namespace, config: Config, project_dir: Path, sa
         median_coverage = float(f.read())
 
     (project_dir / 'covg_norm').mkdir(exist_ok=True)
+    
+    # Process phenotype paths to replace {dataset} with actual dataset name
+    pheno_files = []
+    for p in config.input.pheno_paths:
+        pheno_path = str(p).format(dataset=dataset)
+        pheno_files.append(project_dir / pheno_path)
+    
     prepare_coverage(
         bigwig_manifest=sample_table,
         bins_dir=project_dir / 'gene_bins',
         batches=batches,
-        pheno_files=[project_dir / p for p in config.input.pheno_paths],
+        pheno_files=pheno_files,
         outdir=project_dir / 'covg_norm' / dataset,
         median_coverage=median_coverage
     )

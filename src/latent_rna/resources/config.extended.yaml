@@ -22,8 +22,10 @@ input:
   # Files must be in BED format with chromosome, start, end, and phenotype_id,
   # followed by columns of phenotype values. The phenotype ID must be formatted
   # as {gene_id} or {gene_id}__{other_info}, so that gene IDs can be parsed and
-  # used to regress them out gene-by-gene.
-  # pheno_paths:
+  # used to regress them out gene-by-gene. You can include `{dataset}`
+  # ('dataset' surrounded by curly braces) in the paths to point to
+  # dataset-specific files. Otherwise, if processing multiple datasets, all
+  # samples must be present in each phenotype file.  # pheno_paths:
   #   - path/to/modality1.bed.gz
   #   - path/to/modality2.bed.gz
 

@@ -19,6 +19,14 @@ if 'directory' in config['input']['coverage']:
 
 datasets = sample_table['dataset'].unique().tolist()
 
+# Function to process phenotype paths with dataset substitution
+def get_dataset_pheno_paths(dataset):
+    pheno_paths = []
+    for p in config['input'].get('pheno_paths', []):
+        pheno_path = p.format(dataset=dataset)
+        pheno_paths.append(working_dir / pheno_path)
+    return pheno_paths
+
 rule all:
     input:
         # expand(working_dir / 'gene_bins' / 'batch_{batch}.bed.gz', batch=range(N_BATCHES)),
@@ -50,7 +58,7 @@ rule latent_rna_coverage:
         bw = lambda w: sample_table.loc[sample_table['dataset'] == w.dataset, 'path'].tolist(),
         bins = working_dir / 'gene_bins' / 'batch_{batch}.bed.gz',
         median_covg = working_dir / 'info' / 'median_coverage.txt',
-        # phenos = config['input']['pheno_paths'],
+        phenos = lambda w: get_dataset_pheno_paths(w.dataset),
     output:
         covg = working_dir / 'covg_norm' / '{dataset}' / 'batch_{batch}.npy',
         covg_norm_bins = working_dir / 'covg_norm' / '{dataset}' / 'batch_{batch}.bins.tsv.gz',
