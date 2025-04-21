@@ -248,10 +248,14 @@ def load_phenotypes(pheno_file: Path, samples: list) -> pd.DataFrame:
     return df
 
 def load_and_prepare_phenos(pheno_files: list, samples: list, n_pcs: int) -> DataFrameGroupBy:
-    """Load phenotype tables and prepare for regression
+    """Load explicit phenotype tables and prepare for regression
 
     Load phenotype tables, remove principal components, and group by gene ID.
     Zero-variance phenotypes are filtered out before grouping by gene.
+    Phenotype IDs must begin with the gene ID followed by two underscores. A
+    period and subsequent characters in a gene ID are assumed to be version
+    information and are removed, e.g. `ENSG00000000457.14__ENST00000367771.11`
+    will be matched with latent phenotypes for gene ENSG00000000457.
 
     Args:
         pheno_files: List of paths to phenotype tables.
@@ -267,6 +271,8 @@ def load_and_prepare_phenos(pheno_files: list, samples: list, n_pcs: int) -> Dat
     phenos = pd.concat(phenos, axis=0)
     # Parse gene IDs from phenotype IDs
     pheno_genes = phenos['phenotype_id'].str.split('__').str[0]
+    # Remove version information from gene IDs
+    pheno_genes = pheno_genes.str.split('.').str[0]
     # Phenotype IDs can't be used as index due to duplicates across files
     phenos = phenos.drop('phenotype_id', axis=1)
     # Remove covariates using PCA
@@ -385,10 +391,23 @@ def regress_out_phenos(covg: pd.DataFrame, phenos: DataFrameGroupBy) -> pd.DataF
         The DataFrame of residuals after regressing out phenotypes.
     """
     prev_index = covg.index.copy()
-    covg = covg.groupby("gene_id", group_keys=False).apply(
-        lambda c: regress_out_phenos_gene(c, phenos, c.name)
-    )
+    
+    # Track genes with explicit phenotypes
+    genes_with_phenos = 0
+    total_genes = 0
+    
+    def regress_with_tracking(c):
+        nonlocal genes_with_phenos, total_genes
+        total_genes += 1
+        if c.name in phenos.groups:
+            genes_with_phenos += 1
+        return regress_out_phenos_gene(c, phenos, c.name)
+    
+    covg = covg.groupby("gene_id", group_keys=False).apply(regress_with_tracking)
     assert covg.index.equals(prev_index)
+    
+    print(f"Regression statistics: {genes_with_phenos} out of {total_genes} genes ({genes_with_phenos/total_genes:.1%}) had explicit phenotypes to regress out", flush=True)
+    
     return covg
 
 def prepare_coverage(

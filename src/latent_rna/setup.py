@@ -31,6 +31,9 @@ def get_exon_regions(gtf: Path) -> pd.DataFrame:
 
     Gets exons that are in a protein-coding gene, not in a retained intron or
     readthrough transcript, and returns the union of all exons for each gene.
+    A period and subsequent characters in a gene ID are assumed to be version
+    information and are removed, e.g. `ENSG00000000457.14` will be saved as
+    `ENSG00000000457`.
 
     Args:
         gtf: Path to GTF file
@@ -54,12 +57,14 @@ def get_exon_regions(gtf: Path) -> pd.DataFrame:
             row = row.strip().split('\t')
             if row[2] == 'gene':
                 gene_id = row[8].split('gene_id "')[1].split('"')[0]
+                gene_id = gene_id.split('.')[0]
                 if ('gene_biotype "protein_coding"' in row[8] or 'gene_type "protein_coding"' in row[8]):
                         gene_seqname_strand[gene_id] = (row[0], row[6])
             elif row[2] == 'transcript':
                 if any(x in row[8] for x in exclude):
                     continue
                 gene_id = row[8].split('gene_id "')[1].split('"')[0]
+                gene_id = gene_id.split('.')[0]
                 tx_id = row[8].split('transcript_id "')[1].split('"')[0]
                 tx_to_gene[tx_id] = gene_id
             elif row[2] == 'exon':
