@@ -176,7 +176,15 @@ def setup(gtf: Path, bigwig_manifest: pd.DataFrame, batch_size: int, outdir: Pat
 
     # Calculate median sum of coverage from bigWig headers
     coverage_sums = []
-    for path in bigwig_manifest['path']:
+    paths = bigwig_manifest['path'].tolist()
+    
+    # If more than 1024 samples, use random subset
+    if len(paths) > 1024:
+        np.random.seed(504)  # For reproducibility
+        paths = np.random.choice(paths, size=1024, replace=False)
+        print(f"Using random subset of 1024 samples to estimate median coverage", flush=True)
+    
+    for path in paths:
         with pyBigWig.open(str(path)) as bw:
             coverage_sums.append(bw.header()['sumData'])
     median_coverage = np.median(coverage_sums)
@@ -185,4 +193,3 @@ def setup(gtf: Path, bigwig_manifest: pd.DataFrame, batch_size: int, outdir: Pat
     print(f"Median sum of coverage ({median_coverage}) saved to {outdir / 'median_coverage.txt'}", flush=True)
 
     return genes
-

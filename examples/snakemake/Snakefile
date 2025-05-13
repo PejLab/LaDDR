@@ -19,7 +19,6 @@ if 'directory' in config['input']['coverage']:
 
 datasets = sample_table['dataset'].unique().tolist()
 
-# Function to process phenotype paths with dataset substitution
 def get_dataset_pheno_paths(dataset):
     pheno_paths = []
     for p in config['input'].get('pheno_paths', []):
@@ -35,8 +34,12 @@ rule all:
         expand(working_dir / 'phenotypes' /'latent_phenos.{dataset}.tsv.gz', dataset=datasets),
         # expand(working_dir / 'inspect' / 'inspect.{gene_id}.{dataset}.tsv.gz', gene_id=['ENSG00000008128'], dataset=datasets),
 
+assert not config['binning']['use_existing'], 'Comment out latent_rna_binning rule if using existing info/ and gene_bins/ directories'
 rule latent_rna_binning:
-    """Divide gene features into bins"""
+    """Divide gene features into bins
+    
+    Comment this rule out (and the above assert) if using existing info/ and gene_bins/ directories.
+    """
     input:
         genes = working_dir / 'info' / 'genes.tsv',
         exons = working_dir / 'info' / 'exons.tsv.gz',
@@ -70,8 +73,12 @@ rule latent_rna_coverage:
         latent-rna coverage -d {wildcards.dataset} -b {wildcards.batch}
         """
 
+assert not config['model']['use_existing'], 'Comment out latent_rna_fit rule if using existing models/ directory'
 rule latent_rna_fit:
-    """Fit models to latent features"""
+    """Fit models to latent features
+    
+    Comment this rule out (and the above assert) if using existing models/ directory.
+    """
     input:
         covg_norm = expand(str(working_dir / 'covg_norm' / '{dataset}' / 'batch_{{batch}}.npy'), dataset=datasets),
         covg_norm_bins = expand(str(working_dir / 'covg_norm' / '{dataset}' / 'batch_{{batch}}.bins.tsv.gz'), dataset=datasets),

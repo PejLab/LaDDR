@@ -60,7 +60,19 @@ A latent phenotype table will be produced for each dataset containing phenotypes
 
 ## Usage
 
-This method involves five main steps, plus a sixth optional analysis step, as outlined below.
+This method involves five main steps, plus a sixth optional analysis step, as outlined below. There are also options for using existing gene bins and models:
+
+If **existing gene bins** are available for your desired species and gene annotations:
+
+- Download the `info/` and `gene_bins/` directories and place them in your project directory.
+- Set `use_existing` to `true` in the `binning` section of the config file.
+- Comment out the `latent-rna setup` and `latent-rna binning` commands in the `run.sh` script or the `latent_rna_binning` rule in the `Snakefile`, and do not run `latent-rna setup`.
+
+If **existing latent phenotype models** are available for your desired species and gene annotations:
+
+- Download the `info/`, `gene_bins/`, and `models/` directories and place them in your project directory. If existing models are used, compatible gene bins must also be used to process the coverage data.
+- Set `use_existing` to `true` in both the `binning` and `fit` sections of the config file.
+- Comment out the `latent-rna setup`, `latent-rna binning`, and `latent-rna fit` commands in the `run.sh` script or the `latent_rna_binning` and `latent_rna_fit` rules in the `Snakefile`, and do not run `latent-rna setup`.
 
 ### 1. Set up gene info etc.
 

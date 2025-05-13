@@ -43,6 +43,7 @@ class FixedCountBinningConfig:
 
 @dataclass
 class BinningConfig:
+    use_existing: bool
     method: str
     batch_size: int
     max_bin_width: int
@@ -86,7 +87,7 @@ class Config:
         )
         data_adaptive = data_binning.get('adaptive', {})
         adaptive = AdaptiveBinningConfig(
-            max_samples=data_adaptive.get('max_samples', 64),
+            max_samples=data_adaptive.get('max_samples', 256),
             bins_per_gene=data_adaptive.get('bins_per_gene', 256),
             min_mean_total_covg=data_adaptive.get('min_mean_total_covg', 128),
             max_corr=data_adaptive.get('max_corr', 0.8)
@@ -112,8 +113,9 @@ class Config:
                 pheno_paths=[Path(p) for p in data_input.get('pheno_paths', [])]
             ),
             binning=BinningConfig(
+                use_existing=data_binning.get('use_existing', False),
                 method=data_binning.get('method', 'adaptive_diffvar'),
-                batch_size=data_binning.get('batch_size', 20),
+                batch_size=data_binning.get('batch_size', 40),
                 max_bin_width=data_binning.get('max_bin_width', 1024),
                 adaptive=adaptive,
                 fixed_width=fixed_width,
@@ -233,6 +235,8 @@ def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):
 
 def cli_binning(args: argparse.Namespace, config: Config, project_dir: Path, sample_table: pd.DataFrame):
     """Partition genes into bins for summarizing coverage data"""
+    if config.binning.use_existing:
+        raise ValueError('Cannot run binning if use_existing is true')
     print('=== Partitioning genes into bins ===', flush=True)
     if config.binning.method in ['adaptive_covgcorr', 'adaptive_covgvar', 'adaptive_diffvar']:
         # Use coverage from all datasets, subsample if necessary

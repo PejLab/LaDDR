@@ -4,14 +4,14 @@ set -e
 ## Two datasets, fit all batches in one go, regress out Pantry phenotypes ##
 ############################################################################
 
-## Process annotations and determine number of gene batches
+## Process annotations and determine number of gene batches (do not run if using existing info/ directory)
 latent-rna setup
-## Bin the gene regions using coverage data from all datasets
+## Bin the gene regions using coverage data from all datasets (do not run if using existing gene_bins/ directory)
 latent-rna binning
 ## Prepare the coverage data for each dataset
 latent-rna coverage -d dset1
 latent-rna coverage -d dset2
-## Fit gene models using all datasets
+## Fit gene models using all datasets (do not run if using existing models/ directory)
 latent-rna fit
 ## Apply the models to the coverage data to get latent phenotypes
 latent-rna transform -d dset1
