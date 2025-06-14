@@ -245,7 +245,7 @@ def variance_threshold(
         Calibrated variance threshold per bin
     """
     n_genes = min(128, genes.shape[0])
-    sub_genes = genes.sample(n_genes)
+    sub_genes = genes.sample(n_genes, random_state=603)
     var_per_gene = estimate_var_sum_per_gene(sub_genes, bigwig_paths, median_coverage, covg_diff, pseudocount)
     initial_threshold = var_per_gene / bins_per_gene
     print(f'Initial threshold: {initial_threshold}')
@@ -393,7 +393,7 @@ def split_region_bin_width(region: pd.DataFrame, bin_width_coding: int, bin_widt
     ends = starts + bin_width
     ends[-1] = reg.end
     bins = pd.DataFrame({
-        'seqname': region.seqname,
+        'seqname': reg.seqname,
         'start': starts,
         'end': ends,
         'strand': reg.strand,

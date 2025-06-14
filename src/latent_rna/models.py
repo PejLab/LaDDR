@@ -322,41 +322,43 @@ def inspect_model(
     batch = genes.loc[gene_id, 'batch']
     covg = CoverageData([norm_covg_dir], batch).coverage
     covg = covg.loc[covg.index.get_level_values('gene_id') == gene_id]
+    # Use coverage that is adjusted for total sample coverage but not log-transformed
+    covg = np.exp2(covg) - 8
 
     models_file = models_dir / f'models_batch_{batch}.pickle'
     models = pickle.load(open(models_file, 'rb'))
     model = models['models'][gene_id]
+    assert not model.fpca, "Currently unable to extract loadings from fPCA model."
 
     phenos = load_phenos_for_gene(phenotypes, gene_id)
 
-    if model.fpca:
-        info = covg.iloc[:, :0]
-        if model.fpca_basis == 'discrete':
-            loadings = model.model.components_.data_matrix.T
-            assert loadings.shape[0] == 1
-            loadings = loadings[0]
-            loadings = pd.DataFrame(loadings, index=info.index, columns=[f'PC{i+1}' for i in range(loadings.shape[1])])
-            info = info.join(loadings)
-        else:
-            print("Warning: Currently unable to extract loadings from fPCA model with basis function.")
-            # loadings = model.model.components_.coefficients.T
-    else:
-        # Combine the mean/std from model.features with loadings from the model
-        loadings = model.model.components_.T
-        loadings = pd.DataFrame(loadings, index=model.features.index, columns=[f'PC{i+1}' for i in range(loadings.shape[1])])
-        info = model.features.join(loadings)
+    # Get bin position and mean and standard deviation of log-transformed coverage
+    info = model.features.copy()
+    info = info.rename(columns={'mean': 'norm_mean', 'std': 'norm_std'})
 
-    # Get the coverage mean of the top and bottom tenth of samples per PC
+    # Get 25th, 50th, and 75th percentiles of untransformed coverage
+    covg_percentiles = covg.quantile([0.25, 0.5, 0.75], axis=1).T
+    covg_percentiles.columns = ['covg_25th', 'covg_50th', 'covg_75th']
+    info = info.join(covg_percentiles)
+
+    # Add PC loadings
+    loadings = model.model.components_.T
+    loadings = pd.DataFrame(loadings, index=info.index, columns=[f'loading_PC{i+1}' for i in range(loadings.shape[1])])
+    info = info.join(loadings)
+
+    # Get the coverage median for each decile of samples per PC
     n = int(phenos.shape[0] / 10)
     if n == 0:
         n = 1
-        print(f"Warning: Phenotypes have fewer than 10 samples. Using 1 sample each for top and bottom tenth.")
+        print(f"Warning: Phenotypes have fewer than 10 samples. Using 1 sample per decile.")
     for pc in phenos.columns:
-        top_tenth = phenos[pc].nlargest(n).index
-        bottom_tenth = phenos[pc].nsmallest(n).index
-        top_mean = covg.loc[:, list(top_tenth)].mean(axis=1)
-        bottom_mean = covg.loc[:, list(bottom_tenth)].mean(axis=1)
-        info[f'top_tenth_{pc}'] = top_mean
-        info[f'bottom_tenth_{pc}'] = bottom_mean
+        # Sort samples by PC value and split into 10 equal groups
+        sorted_samples = phenos[pc].sort_values()
+        for decile in range(10):
+            start_idx = decile * n
+            end_idx = (decile + 1) * n if decile < 9 else len(sorted_samples)
+            decile_samples = sorted_samples.iloc[start_idx:end_idx].index
+            decile_median = covg.loc[:, list(decile_samples)].median(axis=1)
+            info[f'decile_{pc}_{decile+1}'] = decile_median
 
     return info
