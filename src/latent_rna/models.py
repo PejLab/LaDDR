@@ -169,12 +169,23 @@ def subset_pcs_pca(pca: PCA, n_pcs_max: int):
         pca.singular_values_ = pca.singular_values_[:n_pcs_max]
         pca.noise_variance_ = None # Could compute if necessary, but omitting otherwise
 
-def fit_batch(norm_covg_dirs: list, batch: int, var_expl_max: float, n_pcs_max: int, fpca: bool = False, fpca_x_values: str = 'bin', fpca_basis: str = 'discrete') -> dict:
+def fit_batch(
+        norm_covg_dirs: list,
+        batch: int,
+        min_samples_expressed: float,
+        var_expl_max: float,
+        n_pcs_max: int,
+        fpca: bool,
+        fpca_x_values: str,
+        fpca_basis: str,
+    ) -> dict:
     """Fit functional PCA models for all genes in a batch
     
     Args:
         norm_covg_dirs: List of directories containing normalized coverage data.
         batch: ID of the batch to fit.
+        min_samples_expressed: Minimum proportion of samples that must have
+          non-zero coverage for a gene to include it in the output.
         var_expl_max: Maximum variance explained by the PCs kept per gene. Pass
           0 or 1 for no variance explained cutoff.
         n_pcs_max: Maximum number of PCs to keep per gene. Pass 0 for no cutoff.
@@ -190,7 +201,7 @@ def fit_batch(norm_covg_dirs: list, batch: int, var_expl_max: float, n_pcs_max: 
         'models'. The 'models' key contains a dictionary with gene IDs as keys
         and Model objects as values.
     """
-    covg = CoverageData(norm_covg_dirs, batch)
+    covg = CoverageData(norm_covg_dirs, batch, min_samples_expressed)
     models = {'var_expl_max': var_expl_max, 'n_pcs_max': n_pcs_max, 'models': {}}
     for gene_id, x in tqdm(covg.by_gene(), total=len(covg.genes), desc="Fitting models"):
         model = Model(fpca, fpca_x_values, fpca_basis)
@@ -208,6 +219,7 @@ def fit(
     fpca: bool = False,
     fpca_x_values: str = 'bin',
     fpca_basis: str = 'discrete',
+    min_samples_expressed: float = 0.5,
 ):
     """Fit functional PCA models for all genes in one or more batches
 
@@ -217,6 +229,8 @@ def fit(
     Args:
         norm_covg_dirs: List of directories containing normalized coverage data.
         batches: List of batch IDs to fit.
+        min_samples_expressed: Minimum proportion of samples that must have
+          non-zero coverage for a gene to include it in the models.
         var_expl_max: Maximum variance explained by the PCs kept per gene. Pass
           0 or 1 for no variance explained cutoff.
         n_pcs_max: Maximum number of PCs to keep per gene. Pass 0 for no cutoff.
@@ -231,13 +245,13 @@ def fit(
     output_dir.mkdir(exist_ok=True)
     for batch in batches:
         print(f'=== Fitting models for batch {batch} ===', flush=True)
-        models = fit_batch(norm_covg_dirs, batch, var_expl_max, n_pcs_max, fpca, fpca_x_values, fpca_basis)
+        models = fit_batch(norm_covg_dirs, batch, min_samples_expressed, var_expl_max, n_pcs_max, fpca, fpca_x_values, fpca_basis)
         outfile = output_dir / f'models_batch_{batch}.pickle'
         with open(outfile, 'wb') as f:
             pickle.dump(models, f)
         print(f'Models saved to {outfile}', flush=True)
 
-def transform_batch(norm_covg_dir: Path, batch: int, models_dir: Path) -> Iterator[pd.DataFrame]:
+def transform_batch(norm_covg_dir: Path, batch: int, models_dir: Path, min_samples_expressed: float = 0.5) -> Iterator[pd.DataFrame]:
     """Apply functional PCA transformation to all genes in a batch
     
     Args:
@@ -245,12 +259,14 @@ def transform_batch(norm_covg_dir: Path, batch: int, models_dir: Path) -> Iterat
           coverage.
         batch: ID of the batch to transform.
         models_dir: Directory of saved models to load and use for transformation.
+        min_samples_expressed: Minimum proportion of samples that must have
+          non-zero coverage for a gene to include it in the output.
 
     Yields:
         DataFrame of transformed data for one gene, with gene ID and PC number
         as index levels and sample IDs as columns.
     """
-    covg = CoverageData([norm_covg_dir], batch)
+    covg = CoverageData([norm_covg_dir], batch, min_samples_expressed)
     print('  Loading models...', flush=True)
     models_file = models_dir / f'models_batch_{batch}.pickle'
     with open(models_file, 'rb') as f:
@@ -259,7 +275,7 @@ def transform_batch(norm_covg_dir: Path, batch: int, models_dir: Path) -> Iterat
         if gene_id in models['models']:
             yield models['models'][gene_id].transform(x)
 
-def transform(norm_covg_dir: Path, models_dir: Path, n_batches: int) -> pd.DataFrame:
+def transform(norm_covg_dir: Path, models_dir: Path, n_batches: int, min_samples_expressed: float = 0.5) -> pd.DataFrame:
     """Apply functional PCA transformation to all genes
     
     Args:
@@ -268,6 +284,8 @@ def transform(norm_covg_dir: Path, models_dir: Path, n_batches: int) -> pd.DataF
         models_dir: Directory of saved models to load and use for transformation.
         n_batches: Number of batches in the data. Latent phenotypes from all
           batches will be computed and concatenated.
+        min_samples_expressed: Minimum proportion of samples that must have
+          non-zero coverage for a gene to include it in the output.
 
     Returns:
         DataFrame of latent phenotypes for all genes.
@@ -275,7 +293,7 @@ def transform(norm_covg_dir: Path, models_dir: Path, n_batches: int) -> pd.DataF
     out = []
     for batch in range(n_batches):
         print(f'Transforming batch {batch}', flush=True)
-        out.extend(transform_batch(norm_covg_dir, batch, models_dir))
+        out.extend(transform_batch(norm_covg_dir, batch, models_dir, min_samples_expressed))
     out = pd.concat(out)
     out = out.reset_index()
     return out

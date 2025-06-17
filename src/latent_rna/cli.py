@@ -23,6 +23,7 @@ class CoverageConfig:
 class InputConfig:
     gtf: Optional[Path]
     coverage: CoverageConfig
+    min_samples_expressed: float
     pheno_paths: List[Path]
 
 @dataclass 
@@ -110,6 +111,7 @@ class Config:
             input=InputConfig(
                 gtf=Path(data_input['gtf']) if 'gtf' in data_input else None,
                 coverage=coverage,
+                min_samples_expressed=data_input.get('min_samples_expressed', 0.5),
                 pheno_paths=[Path(p) for p in data_input.get('pheno_paths', [])]
             ),
             binning=BinningConfig(
@@ -327,6 +329,7 @@ def cli_fit(args: argparse.Namespace, config: Config, project_dir: Path, sample_
     fit(
         norm_covg_dirs=[project_dir / 'covg_norm' / dataset for dataset in datasets],
         batches=batches,
+        min_samples_expressed=config.input.min_samples_expressed,
         var_expl_max=config.model.var_explained_max,
         n_pcs_max=config.model.n_pcs_max,
         output_dir=project_dir / 'models',
@@ -335,7 +338,7 @@ def cli_fit(args: argparse.Namespace, config: Config, project_dir: Path, sample_
         fpca_basis=config.model.fpca.basis
     )
 
-def cli_transform(args: argparse.Namespace, project_dir: Path, sample_table: pd.DataFrame):
+def cli_transform(args: argparse.Namespace, config: Config, project_dir: Path, sample_table: pd.DataFrame):
     """Apply fitted models to normalized coverage data"""
     if args.dataset is not None:
         dataset = args.dataset
@@ -349,7 +352,8 @@ def cli_transform(args: argparse.Namespace, project_dir: Path, sample_table: pd.
     output = transform(
         norm_covg_dir=project_dir / 'covg_norm' / dataset,
         models_dir=project_dir / 'models',
-        n_batches=n_batches
+        n_batches=n_batches,
+        min_samples_expressed=config.input.min_samples_expressed
     )
     outdir = project_dir / 'phenotypes'
     outfile = outdir / f'latent_phenos.{dataset}.tsv.gz'
@@ -406,7 +410,7 @@ def cli():
     elif args.subcommand == 'fit':
         cli_fit(args, config, project_dir, sample_table)
     elif args.subcommand == 'transform':
-        cli_transform(args, project_dir, sample_table)
+        cli_transform(args, config, project_dir, sample_table)
     elif args.subcommand == 'inspect':
         cli_inspect(args, project_dir, sample_table)
 

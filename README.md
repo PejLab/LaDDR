@@ -82,7 +82,7 @@ This command prepares any data that needs to be generated once before the batch 
 latent-rna setup
 ```
 
-This must be run before running the Snakemake pipeline. It generates a table of gene information and a table of exon regions extracted from the gene annotation GTF file specified in the config file. It filters genes to include only those with `gene_biotype`/`gene_type` of  "protein_coding", and assigns genes to batches so that the binning, coverage processing, and model fitting steps can be run in batches for parallelization and to reduce memory.
+This must be run before running the Snakemake pipeline. It generates a table of gene information and a table of exon regions extracted from the gene annotation GTF file specified in the config file. It filters genes to include only those with `gene_biotype`/`gene_type` of  "protein_coding" or "lncRNA", and assigns genes to batches so that the binning, coverage processing, and model fitting steps can be run in batches for parallelization and to reduce memory.
 
 For certain adaptive binning methods, including the default method, this step also computes a cumulative variance threshold used in each batch of the binning step to produce the desired number of bins.
 
@@ -96,7 +96,7 @@ Then, split gene regions into bins to be used for summarizing and representing c
 latent-rna binning --batch 0
 ```
 
-By default, binning is determined using coverage data, partitioning each gene in a way that aims to define more, smaller bins in areas of greater variation across samples. It excludes any bins that overlap the exon of another protein-coding gene.
+By default, binning is determined using coverage data, partitioning each gene in a way that aims to define more, smaller bins in areas of greater variation across samples. It excludes any bins that overlap the exon of another protein-coding or lncRNA gene.
 
 ### 3. Bin and normalize RNA-seq coverage
 
@@ -116,6 +116,8 @@ Normalized coverage data are loaded, one batch at a time, and used to fit a PCA 
 latent-rna fit --batch 0
 ```
 
+Genes for which too many samples (>50% by default) have zero coverage are excluded from the model fitting step.
+
 ### 5. Generate latent RNA phenotypes
 
 Normalized coverage matrices are loaded, one batch at a time, and transformed using the fitted models. The transformed data is saved as a table of phenotypes by samples, i.e. multiple PCs per gene. If a project involves multiple datasets, the coverage count matrices for each dataset can be loaded and transformed separately using the same set of models, so that the phenotypes correspond across datasets.
@@ -123,6 +125,8 @@ Normalized coverage matrices are loaded, one batch at a time, and transformed us
 ```shell
 latent-rna transform --dataset dset1
 ```
+
+Genes for which too many samples (>50% by default) have zero coverage in the provided dataset are excluded from the phenotypes, even if they were included in the model fitting step.
 
 ### 6. (Optional) Analyze latent RNA phenotype models
 

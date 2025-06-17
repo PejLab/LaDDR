@@ -58,7 +58,8 @@ def get_exon_regions(gtf: Path) -> pd.DataFrame:
             if row[2] == 'gene':
                 gene_id = row[8].split('gene_id "')[1].split('"')[0]
                 gene_id = gene_id.split('.')[0]
-                if ('gene_biotype "protein_coding"' in row[8] or 'gene_type "protein_coding"' in row[8]):
+                if ('gene_biotype "protein_coding"' in row[8] or 'gene_type "protein_coding"' in row[8] or
+                    'gene_biotype "lncRNA"' in row[8] or 'gene_type "lncRNA"' in row[8]):
                         gene_seqname_strand[gene_id] = (row[0], row[6])
             elif row[2] == 'transcript':
                 if any(x in row[8] for x in exclude):

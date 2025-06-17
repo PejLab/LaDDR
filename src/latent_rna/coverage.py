@@ -10,7 +10,7 @@ from tqdm import tqdm
 from pandas.core.groupby import DataFrameGroupBy
 
 class CoverageData:
-    def __init__(self, norm_covg_dirs: list, batch_id: int):
+    def __init__(self, norm_covg_dirs: list, batch_id: int, min_samples_expressed: float = 0.5):
         """Load normalized coverage data for one batch
 
         Args:
@@ -18,6 +18,8 @@ class CoverageData:
               data, e.g. to train models on multiple datasets. To load a single
               dataset, pass a list with one directory.
             batch_id: ID of the batch to load.
+            min_samples_expressed: Minimum proportion of samples that must have
+              non-zero coverage for a gene to include it in the output.
         """
         self.samples = []
         for d in norm_covg_dirs:
@@ -28,6 +30,7 @@ class CoverageData:
             self.samples = [f'S{i + 1}' for i in range(len(self.samples))]
         self.coverage, self.bins = self.load_coverage(norm_covg_dirs, batch_id)
         self.genes = list(self.bins.groupby('gene_id').groups.keys())
+        self.min_samples_expressed = min_samples_expressed
 
     def load_coverage(self, norm_covg_dirs: list, batch_id: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Load normalized coverage data for one batch
@@ -52,11 +55,18 @@ class CoverageData:
     def by_gene(self) -> Iterator[Tuple[str, pd.DataFrame]]:
         """Iterate over coverage data for each gene
         
+        Genes with too few samples having non-zero coverage are skipped.
+        
         Yields:
             Tuple of gene ID and coverage DataFrame for the gene
         """
         for gene_id, df in self.coverage.groupby('gene_id'):
-            yield str(gene_id), df
+            # Calculate total coverage per sample
+            gene_total = df.sum()
+            min_covg = gene_total.min()
+            n_expressed = (gene_total > min_covg).sum()
+            if n_expressed >= int(len(gene_total) * self.min_samples_expressed):
+                yield str(gene_id), df
 
 def load_bins(binfile: Path) -> pd.DataFrame:
     """Load bin information from a BED file

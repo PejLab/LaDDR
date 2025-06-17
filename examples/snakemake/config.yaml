@@ -17,6 +17,9 @@ input:
     ## dataset, sample, path to bigWig file.
     manifest: coverage_manifest.tsv
 
+  ## Minimum proportion of samples that must have non-zero coverage for a gene to include it in the models or phenotypes.
+  min_samples_expressed: 0.5
+
   ## Optional: List of paths to phenotype tables (BED format) to regress out
   ## Files must be in BED format with chromosome, start, end, and phenotype_id,
   ## followed by columns of phenotype values. The phenotype ID must be formatted
