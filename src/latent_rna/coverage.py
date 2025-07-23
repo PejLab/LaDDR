@@ -289,7 +289,9 @@ def load_and_prepare_phenos(pheno_files: list, samples: list, n_pcs: int) -> Dat
     if n_pcs > 0:
         phenos = remove_pcs_from_phenos(phenos, n_pcs)
     # Filter out zero-variance features (rows)
-    phenos = phenos.loc[phenos.var(axis=1) > 0]
+    nonzero_var = phenos.var(axis=1) > 0
+    phenos = phenos.loc[nonzero_var]
+    pheno_genes = pheno_genes[nonzero_var]
     phenos = phenos.groupby(pheno_genes)
     return phenos
 

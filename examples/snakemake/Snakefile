@@ -84,6 +84,9 @@ rule latent_rna_fit:
         covg_norm_bins = expand(str(working_dir / 'covg_norm' / '{dataset}' / 'batch_{{batch}}.bins.tsv.gz'), dataset=datasets),
     output:
         models = working_dir / 'models' / 'models_batch_{batch}.pickle',
+    resources:
+        mem_mb = 32000,
+        runtime = '12h',
     shell:
         """
         latent-rna fit -b {wildcards.batch}
@@ -97,6 +100,8 @@ rule latent_rna_transform:
         models = expand(str(working_dir / 'models' / 'models_batch_{batch}.pickle'), batch=range(N_BATCHES)),
     output:
         phenos = working_dir / 'phenotypes' / 'latent_phenos.{dataset}.tsv.gz',
+    resources:
+        mem_mb = 32000,
     shell:
         """
         latent-rna transform -d {wildcards.dataset}
