@@ -5,13 +5,13 @@ import yaml
 
 def copy_resource(resource_name: str, outfile: Path):
     """Copy a resource file to a given output file"""
-    with open_text('latent_rna.resources', resource_name) as f:
+    with open_text('laddr.resources', resource_name) as f:
         content = f.read()
     with open(outfile, 'w') as f:
         f.write(content)
 
 def init_project(project_dir: Path, config_type: str = 'default', template: str = 'both'):
-    """Initialize a new latent-rna project directory
+    """Initialize a new LaDDR project directory
     
     Args:
         project_dir: Path to create new project in.

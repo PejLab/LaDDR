@@ -1,4 +1,4 @@
-"""Extract latent transcriptomic phenotypes from RNA-seq coverage data"""
+"""Latent Data-Driven RNA phenotyping"""
 
 import argparse
 from dataclasses import dataclass
@@ -137,7 +137,7 @@ def create_parser():
     parser = argparse.ArgumentParser(description='Fit and/or apply models on feature bin coverage data')
     subparsers = parser.add_subparsers(title='subcommands', dest='subcommand', required=True, help='Choose a subcommand')
 
-    parser_init = subparsers.add_parser('init', help='Initialize a new latent-rna project')
+    parser_init = subparsers.add_parser('init', help='Initialize a new LaDDR project')
     parser_init.add_argument('project_dir', type=Path, help='Directory to create and initialize project in.')
     parser_init.add_argument('--config-type', type=str, choices=['default', 'example', 'extended'], default='default', help='Type of config file to initialize project with. "default" includes parameters for the recommended binning and model fitting methods. "example" includes a config and coverage manifest file set up to run the example dataset. "extended" includes all possible config parameters.')
     parser_init.add_argument('--template', type=str, choices=['both', 'snakemake', 'shell'], default='both', help='Specify "snakemake" to include a snakefile, "shell" to include a shell script with the basic commands, or "both" to include both.')
@@ -385,7 +385,7 @@ def cli_inspect(args: argparse.Namespace, project_dir: Path, sample_table: pd.Da
     print(f'Model data saved to {outfile}', flush=True)
 
 def cli():
-    """Latent RNA CLI"""
+    """LaDDR CLI"""
     parser = create_parser()
     args = parser.parse_args()
     if args.subcommand == 'init':

@@ -1,9 +1,9 @@
-## Default configuration for latent-rna pipeline
+## Configuration for LaDDR pipeline run on example data
 
 ## Input files
 input:
   ## GTF annotation file path
-  gtf: path/to/annotation.gtf
+  gtf: ../data_input/Homo_sapiens.GRCh38.106.chr1_0-2Mb.gtf
 
   ## How to specify datasets and samples and locate bigWig coverage files
   coverage:
@@ -28,39 +28,39 @@ input:
   ## ('dataset' surrounded by curly braces) in the paths to point to
   ## dataset-specific files. Otherwise, if processing multiple datasets, all
   ## samples must be present in each phenotype file.
-  # pheno_paths:
-  #   - ../data_input/pantry_phenos/{dataset}/alt_TSS.bed.gz
-  #   - ../data_input/pantry_phenos/{dataset}/alt_polyA.bed.gz
-  #   - ../data_input/pantry_phenos/{dataset}/expression.bed.gz
-  #   - ../data_input/pantry_phenos/{dataset}/isoforms.bed.gz
-  #   - ../data_input/pantry_phenos/{dataset}/splicing.bed.gz
-  #   - ../data_input/pantry_phenos/{dataset}/stability.bed.gz
+  pheno_paths:
+    - ../data_input/pantry_phenos/{dataset}/alt_TSS.bed.gz
+    - ../data_input/pantry_phenos/{dataset}/alt_polyA.bed.gz
+    - ../data_input/pantry_phenos/{dataset}/expression.bed.gz
+    - ../data_input/pantry_phenos/{dataset}/isoforms.bed.gz
+    - ../data_input/pantry_phenos/{dataset}/splicing.bed.gz
+    - ../data_input/pantry_phenos/{dataset}/stability.bed.gz
 
 ## Binning parameters
 binning:
   ## Set use_existing to false and uncomment the following parameters to
   ## generate new bin definitions. Otherwise, put existing `info/` and
   ## `gene_bins/` directories in the project directory.
-  use_existing: true
+  use_existing: false
   ## Number of genes (at most) per batch
-  # batch_size: 40
+  batch_size: 20
   ## Maximum width of any bin
-  # max_bin_width: 1024
+  max_bin_width: 1024
   ## Parameters for adaptive binning
-  # adaptive:
-  #   ## Maximum number of coverage samples to use for binning. Samples from all datasets are used, and a random subset is selected if there are more than this number. These samples are used to calculate variance at each base.
-  #   max_samples: 256
-  #   ## Approximate number of bins to create per gene on average.  
-  #   bins_per_gene: 256
+  adaptive:
+    ## Maximum number of coverage samples to use for binning. Samples from all datasets are used, and a random subset is selected if there are more than this number. These samples are used to calculate variance at each base.
+    max_samples: 256
+    ## Approximate number of bins to create per gene on average.  
+    bins_per_gene: 256
 
 ## Model parameters
 model:
   ## Set use_existing to false and uncomment the following parameters to
   ## generate new latent phenotype models. Otherwise, put existing `info/`,
   ## `gene_bins/`, and `models/` directories in the project directory.
-  use_existing: true
+  use_existing: false
   ## Maximum variance explained by PCs to keep. Pass 0 or 1 for no variance
   ## explained cutoff.
-  # var_explained_max: 0.8
+  var_explained_max: 0.8
   ## Maximum number of PCs to keep. Pass 0 for no cutoff.
-  # n_pcs_max: 16
+  n_pcs_max: 16

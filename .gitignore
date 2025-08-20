@@ -2,7 +2,7 @@
 .venv
 .vscode
 __pycache__
-src/latent_rna.egg-info
+src/laddr.egg-info
 examples/data_*
 examples/*/covg_norm
 examples/*/gene_bins

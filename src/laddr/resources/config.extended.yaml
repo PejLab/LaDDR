@@ -1,9 +1,10 @@
-## Configuration for latent-rna pipeline run on example data
+## Extended configuration for LaDDR pipeline
+## Includes all options for recommended and alternative binning and modeling methods
 
 ## Input files
 input:
   ## GTF annotation file path
-  gtf: ../data_input/Homo_sapiens.GRCh38.106.chr1_0-2Mb.gtf
+  gtf: path/to/annotation.gtf
 
   ## How to specify datasets and samples and locate bigWig coverage files
   coverage:
@@ -28,30 +29,48 @@ input:
   ## ('dataset' surrounded by curly braces) in the paths to point to
   ## dataset-specific files. Otherwise, if processing multiple datasets, all
   ## samples must be present in each phenotype file.
-  pheno_paths:
-    - ../data_input/pantry_phenos/{dataset}/alt_TSS.bed.gz
-    - ../data_input/pantry_phenos/{dataset}/alt_polyA.bed.gz
-    - ../data_input/pantry_phenos/{dataset}/expression.bed.gz
-    - ../data_input/pantry_phenos/{dataset}/isoforms.bed.gz
-    - ../data_input/pantry_phenos/{dataset}/splicing.bed.gz
-    - ../data_input/pantry_phenos/{dataset}/stability.bed.gz
+  # pheno_paths:
+  #   - ../data_input/pantry_phenos/{dataset}/alt_TSS.bed.gz
+  #   - ../data_input/pantry_phenos/{dataset}/alt_polyA.bed.gz
+  #   - ../data_input/pantry_phenos/{dataset}/expression.bed.gz
+  #   - ../data_input/pantry_phenos/{dataset}/isoforms.bed.gz
+  #   - ../data_input/pantry_phenos/{dataset}/splicing.bed.gz
+  #   - ../data_input/pantry_phenos/{dataset}/stability.bed.gz
 
-## Binning parameters
+# Binning parameters
 binning:
   ## Set use_existing to false and uncomment the following parameters to
   ## generate new bin definitions. Otherwise, put existing `info/` and
   ## `gene_bins/` directories in the project directory.
   use_existing: false
+  ## Method to use for binning: adaptive_covgcorr, adaptive_covgvar, adaptive_diffvar, fixed_width, or fixed_count
+  ## Whether to determine bins adaptively from coverage data, split all coding/noncoding regions into fixed-width bins, or split each region into a fixed number of bins.
+  ## TODO describe each method in more detail
+  method: adaptive_diffvar
   ## Number of genes (at most) per batch
-  batch_size: 20
+  batch_size: 40
   ## Maximum width of any bin
   max_bin_width: 1024
   ## Parameters for adaptive binning
   adaptive:
     ## Maximum number of coverage samples to use for binning. Samples from all datasets are used, and a random subset is selected if there are more than this number. These samples are used to calculate variance at each base.
     max_samples: 256
-    ## Approximate number of bins to create per gene on average.  
+    ## For method "adaptive_covgvar" or "adaptive_diffvar", approximate number of bins to create per gene on average.  
     bins_per_gene: 256
+    ## For method "adaptive_covgcorr", minimum allowed mean total coverage per sample for a bin.
+    min_mean_total_covg: 128
+    ## For method "adaptive_covgcorr", maximum allowed correlation between normalized coverage of adjacent bins.
+    max_corr: 0.8
+  ## Parameters for fixed_width binning  
+  fixed_width:
+    ## Width of bins for coding (exonic) regions of the genes.
+    coding: 16
+    ## Width of bins for noncoding (non-exonic) regions of the genes.
+    noncoding: 128
+  ## Parameters for fixed_count binning
+  fixed_count:
+    ## Number of bins per exonic/intronic region
+    n_bins_per_region: 24
 
 ## Model parameters
 model:
@@ -59,8 +78,14 @@ model:
   ## generate new latent phenotype models. Otherwise, put existing `info/`,
   ## `gene_bins/`, and `models/` directories in the project directory.
   use_existing: false
-  ## Maximum variance explained by PCs to keep. Pass 0 or 1 for no variance
-  ## explained cutoff.
+  ## Maximum variance explained by PCs to keep. Pass 0 or 1 for no variance explained cutoff.
   var_explained_max: 0.8
   ## Maximum number of PCs to keep. Pass 0 for no cutoff.
   n_pcs_max: 16
+  ## Whether to use functional PCA
+  use_fpca: false
+  fpca:
+    ## Use bin numbers ('bin') or genomic positions ('pos') as x-values
+    x_values: bin
+    ## Basis function: discrete or spline
+    basis: discrete

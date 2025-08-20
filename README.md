@@ -1,10 +1,11 @@
-# latent-rna
- Extract latent transcriptomic phenotypes
+# LaDDR
+
+Latent Data-Driven RNA phenotyping
 
 ## Installation
 
 ```shell
-cd latent-rna
+cd LaDDR
 pip install -e .
 ```
 
@@ -13,7 +14,7 @@ pip install -e .
 Run this command to generate a project directory `myproject` with the basic config and to template options for running the pipeline:
 
 ```shell
-latent-rna init myproject
+laddr init myproject
 cd myproject
 ```
 
@@ -29,13 +30,13 @@ Files created:
 
 Either `run.sh` or `Snakefile` can be modified as needed to run the project. We recommend adapting the `Snakefile` for your project and using the [Snakemake](https://snakemake.readthedocs.io/en/stable/) workflow system.
 
-Aside from command line arguments for the dataset and/or batch for which to run a command, all parameters, file paths, etc. are specified in the `config.yaml` file, since they are often reused across commands. The default config contains parameters for the recommended binning and model fitting methods. To start with a config file containing all method options and parameters, use `latent-rna init myproject --config-type extended`.
+Aside from command line arguments for the dataset and/or batch for which to run a command, all parameters, file paths, etc. are specified in the `config.yaml` file, since they are often reused across commands. The default config contains parameters for the recommended binning and model fitting methods. To start with a config file containing all method options and parameters, use `laddr init myproject --config-type extended`.
 
 `examples/` contains two project directories set up to run example projects on two small datasets using either method. If you install the package from pip and do not have `examples/`, you can generate its two subdirectories with these commands:
 
 ```shell
-latent-rna init shell --config-type example --template shell
-latent-rna init snakemake --config-type example --template snakemake
+laddr init shell --config-type example --template shell
+laddr init snakemake --config-type example --template snakemake
 ```
 
 ### Get base-level RNA-seq coverage
@@ -66,34 +67,34 @@ If **existing gene bins** are available for your desired species and gene annota
 
 - Download the `info/` and `gene_bins/` directories and place them in your project directory.
 - Set `use_existing` to `true` in the `binning` section of the config file.
-- Comment out the `latent-rna setup` and `latent-rna binning` commands in the `run.sh` script or the `latent_rna_binning` rule in the `Snakefile`, and do not run `latent-rna setup`.
+- Comment out the `laddr setup` and `laddr binning` commands in the `run.sh` script or the `laddr_binning` rule in the `Snakefile`, and do not run `laddr setup`.
 
 If **existing latent phenotype models** are available for your desired species and gene annotations:
 
 - Download the `info/`, `gene_bins/`, and `models/` directories and place them in your project directory. If existing models are used, compatible gene bins must also be used to process the coverage data.
 - Set `use_existing` to `true` in both the `binning` and `fit` sections of the config file.
-- Comment out the `latent-rna setup`, `latent-rna binning`, and `latent-rna fit` commands in the `run.sh` script or the `latent_rna_binning` and `latent_rna_fit` rules in the `Snakefile`, and do not run `latent-rna setup`.
+- Comment out the `laddr setup`, `laddr binning`, and `laddr fit` commands in the `run.sh` script or the `laddr_binning` and `laddr_fit` rules in the `Snakefile`, and do not run `laddr setup`.
 
 ### 1. Set up gene info etc.
 
 This command prepares any data that needs to be generated once before the batch processing steps are run:
 
 ```shell
-latent-rna setup
+laddr setup
 ```
 
 This must be run before running the Snakemake pipeline. It generates a table of gene information and a table of exon regions extracted from the gene annotation GTF file specified in the config file. It filters genes to include only those with `gene_biotype`/`gene_type` of  "protein_coding" or "lncRNA", and assigns genes to batches so that the binning, coverage processing, and model fitting steps can be run in batches for parallelization and to reduce memory.
 
 For certain adaptive binning methods, including the default method, this step also computes a cumulative variance threshold used in each batch of the binning step to produce the desired number of bins.
 
-Beware editing the config file after running `latent-rna setup`, as the info generated may not be compatible with the updated parameters and cause silent bugs.
+Beware editing the config file after running `laddr setup`, as the info generated may not be compatible with the updated parameters and cause silent bugs.
 
 ### 2. Define genomic bins
 
 Then, split gene regions into bins to be used for summarizing and representing coverage data:
 
 ```shell
-latent-rna binning --batch 0
+laddr binning --batch 0
 ```
 
 By default, binning is determined using coverage data, partitioning each gene in a way that aims to define more, smaller bins in areas of greater variation across samples. It excludes any bins that overlap the exon of another protein-coding or lncRNA gene.
@@ -103,7 +104,7 @@ By default, binning is determined using coverage data, partitioning each gene in
 For each gene batch, use its bin definitions to get mean coverage per bin for all samples and normalize:
 
 ```shell
-latent-rna coverage --dataset dset1 --batch 0
+laddr coverage --dataset dset1 --batch 0
 ```
 
 At this stage you can also provide quantified explicit phenotypes, e.g. from [Pantry](https://github.com/PejLab/Pantry), to regress out. Training and applying models on this residualized coverage data results in "residual" latent RNA phenotypes, which can complement the explicit phenotypes by representing uncharacterized transcriptomic variation.
@@ -113,7 +114,7 @@ At this stage you can also provide quantified explicit phenotypes, e.g. from [Pa
 Normalized coverage data are loaded, one batch at a time, and used to fit a PCA (or FPCA) model for each gene. If a project involves multiple datasets, e.g. tissues, the coverage count matrices for each dataset will be loaded together, and the models will be fit on the concatenated data.
 
 ```shell
-latent-rna fit --batch 0
+laddr fit --batch 0
 ```
 
 Genes for which too many samples (>50% by default) have zero coverage are excluded from the model fitting step.
@@ -123,7 +124,7 @@ Genes for which too many samples (>50% by default) have zero coverage are exclud
 Normalized coverage matrices are loaded, one batch at a time, and transformed using the fitted models. The transformed data is saved as a table of phenotypes by samples, i.e. multiple PCs per gene. If a project involves multiple datasets, the coverage count matrices for each dataset can be loaded and transformed separately using the same set of models, so that the phenotypes correspond across datasets.
 
 ```shell
-latent-rna transform --dataset dset1
+laddr transform --dataset dset1
 ```
 
 Genes for which too many samples (>50% by default) have zero coverage in the provided dataset are excluded from the phenotypes, even if they were included in the model fitting step.
@@ -133,7 +134,7 @@ Genes for which too many samples (>50% by default) have zero coverage in the pro
 This command inspects the latent RNA phenotype model for a specific gene, and uses raw coverage, stored models, and latent phenotypes:
 
 ```shell
-latent-rna inspect -g ENSG00000008128 -d dset1
+laddr inspect -g ENSG00000008128 -d dset1
 ```
 
 The output for a PCA model is a table with one row per bin:
