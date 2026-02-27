@@ -207,7 +207,8 @@ def get_sample_table(coverage_config: CoverageConfig, project_dir: Path) -> pd.D
 
 def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):
     """Process annotations and determine workflow parameters"""
-    assert config.input.gtf is not None, 'gtf is required for setup'
+    if config.input.gtf is None:
+        raise ValueError('gtf is required for setup')
     print('=== Processing annotations, getting batch size, and coverage parameters ===', flush=True)
     genes = setup(
         gtf=project_dir / config.input.gtf,
@@ -284,7 +285,8 @@ def cli_coverage(args: argparse.Namespace, config: Config, project_dir: Path, sa
         dataset = args.dataset
     else:
         datasets = sample_table['dataset'].unique().tolist()
-        assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
+        if len(datasets) != 1:
+            raise ValueError('If dataset is omitted, the config must indicate a single dataset')
         dataset = datasets[0]
     sample_table = sample_table.loc[sample_table['dataset'] == dataset, :]
 
@@ -344,7 +346,8 @@ def cli_transform(args: argparse.Namespace, config: Config, project_dir: Path, s
         dataset = args.dataset
     else:
         datasets = sample_table['dataset'].unique().tolist()
-        assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
+        if len(datasets) != 1:
+            raise ValueError('If dataset is omitted, the config must indicate a single dataset')
         dataset = datasets[0]
     with open(project_dir / 'info' / 'n_batches.txt', 'r') as f:
         n_batches = int(f.read())
@@ -368,7 +371,8 @@ def cli_inspect(args: argparse.Namespace, project_dir: Path, sample_table: pd.Da
         dataset = args.dataset
     else:
         datasets = sample_table['dataset'].unique().tolist()
-        assert len(datasets) == 1, 'If dataset is omitted, the config must indicate a single dataset'
+        if len(datasets) != 1:
+            raise ValueError('If dataset is omitted, the config must indicate a single dataset')
         dataset = datasets[0]
     print(f'Using coverage and phenotypes from dataset {dataset}', flush=True)
     output = inspect_model(

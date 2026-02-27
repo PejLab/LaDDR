@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "laddr"
+version = "1.0.0"
+description = "Latent Data-Driven RNA phenotyping"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Daniel Munro" },
+]
+dependencies = [
+  "bx-python",
+  "numpy<2",
+  "pandas",
+  "pyBigWig",
+  "PyYAML",
+  "scikit-fda",
+  "scikit-learn",
+  "scipy<1.17",
+  "statsmodels",
+  "tqdm",
+]
+
+[project.scripts]
+laddr = "laddr.cli:cli"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"laddr.resources" = [
+  "config.default.yaml",
+  "config.example.yaml",
+  "config.extended.yaml",
+  "coverage_manifest.tsv",
+  "Snakefile",
+  "run.sh",
+]

@@ -43,9 +43,12 @@ binning:
   ## generate new bin definitions. Otherwise, put existing `info/` and
   ## `gene_bins/` directories in the project directory.
   use_existing: false
-  ## Method to use for binning: adaptive_covgcorr, adaptive_covgvar, adaptive_diffvar, fixed_width, or fixed_count
-  ## Whether to determine bins adaptively from coverage data, split all coding/noncoding regions into fixed-width bins, or split each region into a fixed number of bins.
-  ## TODO describe each method in more detail
+  ## Method to use for binning:
+  ## adaptive_covgcorr: merge adjacent bases until bins have sufficient mean coverage and limited adjacent-bin correlation.
+  ## adaptive_covgvar: merge adjacent bases using variance of log-coverage to target bins_per_gene on average.
+  ## adaptive_diffvar: like adaptive_covgvar, but uses variance of adjacent-position log-coverage differences.
+  ## fixed_width: split exonic and non-exonic regions into fixed-width bins.
+  ## fixed_count: split each exonic/non-exonic region into a fixed number of bins.
   method: adaptive_diffvar
   ## Number of genes (at most) per batch
   batch_size: 40

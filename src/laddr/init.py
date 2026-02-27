@@ -1,13 +1,12 @@
 from pathlib import Path
 import shutil
-from importlib.resources import open_text
+from importlib.resources import files
 import yaml
 
 def copy_resource(resource_name: str, outfile: Path):
     """Copy a resource file to a given output file"""
-    with open_text('laddr.resources', resource_name) as f:
-        content = f.read()
-    with open(outfile, 'w') as f:
+    content = files('laddr.resources').joinpath(resource_name).read_text(encoding='utf-8')
+    with open(outfile, 'w', encoding='utf-8') as f:
         f.write(content)
 
 def init_project(project_dir: Path, config_type: str = 'default', template: str = 'both'):
@@ -25,7 +24,8 @@ def init_project(project_dir: Path, config_type: str = 'default', template: str 
           "both" to include both.
     """
     # Create directory structure
-    assert not project_dir.exists(), f"Directory {project_dir} already exists"
+    if project_dir.exists():
+        raise FileExistsError(f"Directory {project_dir} already exists")
     project_dir.mkdir()
 
     copy_resource(f'config.{config_type}.yaml', project_dir / 'config.yaml')
