@@ -143,7 +143,7 @@ def get_adaptive_bins_covgcorr_batch(
     """
     def get_adaptive_bins_gene(gene: pd.DataFrame) -> pd.DataFrame:
         seqname, window_start, window_end, strand = gene[['seqname', 'window_start', 'window_end', 'strand']].iloc[0]
-        covg = base_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end)
+        covg = base_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end, strand=strand)
         starts, ends = get_adaptive_bins_covgcorr(covg, min_mean_total_covg, max_corr)
         bins = pd.DataFrame({
             'seqname': seqname,
@@ -205,8 +205,8 @@ def estimate_var_sum_per_gene(
     """
     total = 0
     for gene in tqdm(genes.itertuples(index=False), total=genes.shape[0], desc="Calculating variance per gene"):
-        seqname, window_start, window_end = gene.seqname, gene.window_start, gene.window_end
-        covg = base_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end, median_coverage)
+        seqname, window_start, window_end, strand = gene.seqname, gene.window_start, gene.window_end, gene.strand
+        covg = base_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end, median_coverage, strand=strand)
         covg = np.log2(covg + pseudocount)
         if covg_diff:
             covg = np.diff(covg, axis=0, append=np.log2(pseudocount))
@@ -294,7 +294,7 @@ def get_adaptive_bins_var_batch(
         return starts, ends
     def get_adaptive_bins_var_gene(gene: pd.DataFrame) -> pd.DataFrame:
         seqname, window_start, window_end, strand = gene[['seqname', 'window_start', 'window_end', 'strand']].iloc[0]
-        covg = base_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end)
+        covg = base_covg_from_bigwigs(bigwig_paths, seqname, window_start, window_end, strand=strand)
         starts, ends = get_adaptive_bins_var(covg, var_per_bin)
         bins = pd.DataFrame({
             'seqname': seqname,

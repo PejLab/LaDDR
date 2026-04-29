@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import pyBigWig
-from typing import Iterator, Optional, Tuple
+from typing import Iterator, Optional, Sequence, Tuple
 from tqdm import tqdm
 from pandas.core.groupby import DataFrameGroupBy
 
@@ -68,6 +68,29 @@ class CoverageData:
             if n_expressed >= int(len(gene_total) * self.min_samples_expressed):
                 yield str(gene_id), df
 
+def _is_stranded_manifest(bigwig_manifest: pd.DataFrame) -> bool:
+    return {'plus_path', 'minus_path'}.issubset(bigwig_manifest.columns)
+
+def _path_for_strand(row: pd.Series, strand: str) -> Path:
+    if strand == '+':
+        return Path(row['plus_path'])
+    if strand == '-':
+        return Path(row['minus_path'])
+    raise ValueError(f"Invalid strand: {strand}. Expected '+' or '-'")
+
+def _bigwig_sum_data(path: Path) -> float:
+    with pyBigWig.open(str(path)) as bw:
+        return bw.header()['sumData']
+
+def bigwig_sample_depths(bigwig_manifest: pd.DataFrame) -> list[float]:
+    """Get sample-level total coverage from bigWig headers"""
+    if _is_stranded_manifest(bigwig_manifest):
+        return [
+            _bigwig_sum_data(Path(row['plus_path'])) + _bigwig_sum_data(Path(row['minus_path']))
+            for _, row in bigwig_manifest.iterrows()
+        ]
+    return [_bigwig_sum_data(Path(path)) for path in bigwig_manifest['path']]
+
 def load_bins(binfile: Path) -> pd.DataFrame:
     """Load bin information from a BED file
 
@@ -83,16 +106,17 @@ def load_bins(binfile: Path) -> pd.DataFrame:
     Returns:
         The DataFrame containing bin information. Rows are bins and are indexed
         by gene_id and pos (of bin center, relative to gene start), and columns
-        are chrom, chrom_start, and chrom_end.
+        are chrom, chrom_start, chrom_end, and strand if the BED file includes
+        a strand column.
     """
-    bins = pd.read_csv(
-        binfile,
-        sep="\t",
-        header=None,
-        usecols=[0, 1, 2, 3],
-        names=["chrom", "chrom_start", "chrom_end", "bin"],
-        index_col="bin",
-    )
+    bins = pd.read_csv(binfile, sep="\t", header=None)
+    columns = ["chrom", "chrom_start", "chrom_end", "bin", "score", "strand"]
+    bins = bins.iloc[:, :min(bins.shape[1], len(columns))]
+    bins.columns = columns[:bins.shape[1]]
+    keep_cols = ["chrom", "chrom_start", "chrom_end", "bin"]
+    if "strand" in bins.columns:
+        keep_cols.append("strand")
+    bins = bins[keep_cols].set_index("bin")
     # Use rsplit to split on the rightmost 2 underscores in case the gene ID
     # contains underscores.
     bins.index = bins.index.str.rsplit("_", n=2, expand=True)
@@ -104,7 +128,10 @@ def load_bins(binfile: Path) -> pd.DataFrame:
     bins['length'] = bins['end'] - bins['start']
     bins['pos'] = bins['start'] + bins['length'] // 2
     bins = bins.set_index(['gene_id', 'pos'])
-    bins = bins[['chrom', 'chrom_start', 'chrom_end']]
+    columns = ['chrom', 'chrom_start', 'chrom_end']
+    if 'strand' in bins.columns:
+        columns.append('strand')
+    bins = bins[columns]
     return bins
 
 def bin_covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame, median_coverage: Optional[float] = None) -> pd.DataFrame:
@@ -112,7 +139,8 @@ def bin_covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame, med
     
     Args:
         bigwig_manifest: DataFrame containing bigWig manifest. Must have columns
-          sample and path.
+          sample and path, or sample, plus_path, and minus_path for stranded
+          coverage.
         bins: DataFrame containing bin information. Rows are bins, indexed by
           gene_id and pos, and columns include chrom, chrom_start, and
           chrom_end.
@@ -126,26 +154,41 @@ def bin_covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame, med
     Raises:
         ValueError: If any chromosome in the bins is not found in any bigWig file
     """
+    stranded = _is_stranded_manifest(bigwig_manifest)
+    if stranded and 'strand' not in bins.columns:
+        raise ValueError("Stranded bigWig manifest requires bins with a strand column")
     covg = np.zeros((bins.shape[0], len(bigwig_manifest)))
     for i, (_, row) in enumerate(tqdm(bigwig_manifest.iterrows(), 
                                      total=len(bigwig_manifest), 
                                      desc="Processing bigWig files")):
-        with pyBigWig.open(str(row['path'])) as bw:
+        sample_depth = None
+        if median_coverage is not None and stranded:
+            sample_depth = _bigwig_sum_data(Path(row['plus_path'])) + _bigwig_sum_data(Path(row['minus_path']))
+
+        open_bigwigs = {}
+        if stranded:
+            paths = {'+': Path(row['plus_path']), '-': Path(row['minus_path'])}
+        else:
+            paths = {'unstranded': Path(row['path'])}
+        try:
+            open_bigwigs = {key: pyBigWig.open(str(path)) for key, path in paths.items()}
+            first_bw = next(iter(open_bigwigs.values()))
             # Check that all required chromosomes are in the bigWig file
-            chroms = bw.chroms()
-            unique_chroms = set(bins['chrom'].unique())
-            missing_chroms = [chr for chr in unique_chroms if str(chr) not in chroms]
-            if missing_chroms:
-                available_chroms = list(chroms.keys())
-                raise ValueError(
-                    f"Chromosomes {missing_chroms} not found in bigWig file {row['path']}.\n"
-                    f"Available chromosomes: {available_chroms}"
-                )
+            for key, bw in open_bigwigs.items():
+                chroms = bw.chroms()
+                unique_chroms = set(bins['chrom'].unique())
+                missing_chroms = [chr for chr in unique_chroms if str(chr) not in chroms]
+                if missing_chroms:
+                    available_chroms = list(chroms.keys())
+                    raise ValueError(
+                        f"Chromosomes {missing_chroms} not found in bigWig file {paths[key]}.\n"
+                        f"Available chromosomes: {available_chroms}"
+                    )
 
             # Get scaling factor based on bigWig header
             scaling_factor = 1.0
             if median_coverage is not None:
-                total_coverage = bw.header()['sumData']
+                total_coverage = sample_depth if stranded else first_bw.header()['sumData']
                 if total_coverage > 0:
                     scaling_factor = total_coverage / median_coverage
                     
@@ -153,28 +196,42 @@ def bin_covg_from_bigwigs(bigwig_manifest: pd.DataFrame, bins: pd.DataFrame, med
                 chrom = str(bins.loc[(gene_id, pos), 'chrom'])
                 start = bins.loc[(gene_id, pos), 'chrom_start']
                 end = bins.loc[(gene_id, pos), 'chrom_end']
+                bw = open_bigwigs[bins.loc[(gene_id, pos), 'strand']] if stranded else first_bw
+                path = _path_for_strand(row, bins.loc[(gene_id, pos), 'strand']) if stranded else Path(row['path'])
                 try:
                     bin_coverage = bw.stats(chrom, start, end, type='mean', exact=True)[0]
                     if bin_coverage is not None:
                         covg[j, i] = bin_coverage / scaling_factor
                 except RuntimeError as e:
-                    print(f"RuntimeError for {gene_id}, {chrom}:{start}-{end} in file {row['path']}: {e}", flush=True)
+                    print(f"RuntimeError for {gene_id}, {chrom}:{start}-{end} in file {path}: {e}", flush=True)
                     raise e
+        finally:
+            for bw in open_bigwigs.values():
+                bw.close()
     samples = bigwig_manifest['sample'].tolist()
     df = pd.DataFrame(covg, index=bins.index, columns=samples)
     return df
 
-def base_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, end: int, median_coverage: Optional[float] = None) -> np.ndarray:
+def base_covg_from_bigwigs(
+        bigwig_paths: Sequence[Path] | pd.DataFrame,
+        seqname: str,
+        start: int,
+        end: int,
+        median_coverage: Optional[float] = None,
+        strand: Optional[str] = None
+) -> np.ndarray:
     """Load base-level coverage data for one region from bigWig files
 
     Args:
-        bigwig_paths: List of paths to bigWig files to load
+        bigwig_paths: List of paths to bigWig files to load, or a bigWig
+          manifest DataFrame with path or plus_path/minus_path columns.
         seqname: Chromosome name
         start: Start position (0-based)
         end: End position (0-based)
         median_coverage: Median of sumData across all samples. If provided,
           coverage values will be scaled by sumData/median_coverage to normalize
           for sequencing depth. If None, no scaling is applied.
+        strand: Gene strand. Required when bigwig_paths is a stranded manifest.
 
     Returns:
         Array of shape (end - start, len(bigwig_paths)) with coverage data
@@ -182,8 +239,27 @@ def base_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, e
     Raises:
         ValueError: If seqname is not found in any of the bigWig files
     """
-    covg = np.zeros((end - start, len(bigwig_paths)))
-    for i, path in enumerate(bigwig_paths):
+    if isinstance(bigwig_paths, pd.DataFrame):
+        manifest = bigwig_paths
+        stranded = _is_stranded_manifest(manifest)
+        if stranded and strand is None:
+            raise ValueError("strand is required when loading from a stranded bigWig manifest")
+        rows = list(manifest.iterrows())
+    else:
+        manifest = None
+        stranded = False
+        rows = list(enumerate(bigwig_paths))
+    covg = np.zeros((end - start, len(rows)))
+    for i, row_data in rows:
+        if manifest is None:
+            path = Path(row_data)
+            sample_depth = None
+        else:
+            row = row_data
+            path = _path_for_strand(row, strand) if stranded else Path(row['path'])
+            sample_depth = None
+            if median_coverage is not None and stranded:
+                sample_depth = _bigwig_sum_data(Path(row['plus_path'])) + _bigwig_sum_data(Path(row['minus_path']))
         with pyBigWig.open(str(path)) as bw:
             chroms = bw.chroms()
             if str(seqname) not in chroms:
@@ -196,7 +272,7 @@ def base_covg_from_bigwigs(bigwig_paths: list[Path], seqname: str, start: int, e
             # Get scaling factor based on bigWig header
             scaling_factor = 1.0
             if median_coverage is not None:
-                total_coverage = bw.header()['sumData']
+                total_coverage = sample_depth if stranded else bw.header()['sumData']
                 if total_coverage > 0:
                     scaling_factor = total_coverage / median_coverage
                     
@@ -484,4 +560,3 @@ def prepare_coverage(
                 f.write('\n'.join(covg.columns) + '\n')
         
         print(f'Coverage saved in {outdir}', flush=True)
-

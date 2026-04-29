@@ -57,6 +57,18 @@ tissue8	S098	../data_input/covg_bigwig/tissue8/S098.bw
 tissue8	S099	../data_input/covg_bigwig/tissue8/S099.bw
 ```
 
+If you have strand-specific bigWigs, set `input.coverage.stranded: true` in the config file and use a four-column manifest:
+
+```
+tissue1	S000	../data_input/covg_bigwig/tissue1/S000.plus.bw	../data_input/covg_bigwig/tissue1/S000.minus.bw
+tissue1	S001	../data_input/covg_bigwig/tissue1/S001.plus.bw	../data_input/covg_bigwig/tissue1/S001.minus.bw
+...
+tissue8	S098	../data_input/covg_bigwig/tissue8/S098.plus.bw	../data_input/covg_bigwig/tissue8/S098.minus.bw
+tissue8	S099	../data_input/covg_bigwig/tissue8/S099.plus.bw	../data_input/covg_bigwig/tissue8/S099.minus.bw
+```
+
+In stranded mode, coverage for each gene is loaded from the bigWig matching the gene strand, while depth normalization uses the combined plus- and minus-strand coverage for each sample.
+
 A latent phenotype table will be produced for each dataset containing phenotypes for its samples. The reason multiple datasets are supported is that the coverage data can be loaded together and the latent phenotype models can be fit jointly, so that the models are trained on biologically diverse data and the phenotypes correspond across datasets.
 
 ## Usage

@@ -6,7 +6,7 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 import pyBigWig
-from .coverage import validate_chromosomes
+from .coverage import bigwig_sample_depths, validate_chromosomes
 
 def interval_union(intervals: list[list[int]]) -> list[list[int]]:
     """Get the union of a list of intervals
@@ -153,10 +153,12 @@ def setup(gtf: Path, bigwig_manifest: pd.DataFrame, batch_size: int, outdir: Pat
     """
     exons = get_exon_regions(gtf)
     
-    bigwig1 = Path(bigwig_manifest['path'].iloc[0])
+    bigwig1 = Path(bigwig_manifest['path'].iloc[0] if 'path' in bigwig_manifest.columns else bigwig_manifest['plus_path'].iloc[0])
     with pyBigWig.open(str(bigwig1)) as bw:
         chrom_lengths = dict(bw.chroms())
     validate_chromosomes(bigwig1, set(exons['seqname']))
+    if 'minus_path' in bigwig_manifest.columns:
+        validate_chromosomes(Path(bigwig_manifest['minus_path'].iloc[0]), set(exons['seqname']))
 
     genes = gene_coordinates(exons, chrom_lengths)
     n_batches = int(np.ceil(len(genes) / batch_size))
@@ -176,18 +178,15 @@ def setup(gtf: Path, bigwig_manifest: pd.DataFrame, batch_size: int, outdir: Pat
     print(f"Number of batches saved to {outdir / 'n_batches.txt'}", flush=True)
 
     # Calculate median sum of coverage from bigWig headers
-    coverage_sums = []
-    paths = bigwig_manifest['path'].tolist()
+    manifest = bigwig_manifest
     
     # If more than 1024 samples, use random subset
-    if len(paths) > 1024:
+    if len(manifest) > 1024:
         np.random.seed(504)  # For reproducibility
-        paths = np.random.choice(paths, size=1024, replace=False)
+        manifest = manifest.sample(n=1024, random_state=504)
         print(f"Using random subset of 1024 samples to estimate median coverage", flush=True)
     
-    for path in paths:
-        with pyBigWig.open(str(path)) as bw:
-            coverage_sums.append(bw.header()['sumData'])
+    coverage_sums = bigwig_sample_depths(manifest)
     median_coverage = np.median(coverage_sums)
     with open(outdir / 'median_coverage.txt', 'w') as f:
         f.write(str(median_coverage))

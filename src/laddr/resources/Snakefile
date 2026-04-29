@@ -11,11 +11,20 @@ with open(BATCH_FILE, 'r') as f:
     N_BATCHES = int(f.read())
 
 assert config['input']['coverage']['method'] == 'manifest'
-sample_table = pd.read_csv(config['input']['coverage']['manifest'], sep='\t', names=['dataset', 'sample', 'path'])
+sample_table = pd.read_csv(config['input']['coverage']['manifest'], sep='\t', header=None)
+if config['input']['coverage'].get('stranded', False):
+    assert sample_table.shape[1] == 4, f"Stranded coverage manifest must have 4 columns, but found {sample_table.shape[1]}"
+    sample_table.columns = ['dataset', 'sample', 'plus_path', 'minus_path']
+    path_columns = ['plus_path', 'minus_path']
+else:
+    assert sample_table.shape[1] == 3, f"Coverage manifest must have 3 columns, but found {sample_table.shape[1]}"
+    sample_table.columns = ['dataset', 'sample', 'path']
+    path_columns = ['path']
 if 'directory' in config['input']['coverage']:
     # Prepend coverage directory to paths if specified
     covg_dir = Path(config['input']['coverage']['directory'])
-    sample_table['path'] = sample_table['path'].apply(lambda p: str(covg_dir / p))
+    for col in path_columns:
+        sample_table[col] = sample_table[col].apply(lambda p: str(covg_dir / p))
 
 datasets = sample_table['dataset'].unique().tolist()
 
@@ -25,6 +34,11 @@ def get_dataset_pheno_paths(dataset):
         pheno_path = p.format(dataset=dataset)
         pheno_paths.append(working_dir / pheno_path)
     return pheno_paths
+
+def get_bigwig_paths(df):
+    if {'plus_path', 'minus_path'}.issubset(df.columns):
+        return df['plus_path'].tolist() + df['minus_path'].tolist()
+    return df['path'].tolist()
 
 rule all:
     input:
@@ -44,7 +58,7 @@ rule laddr_binning:
         genes = working_dir / 'info' / 'genes.tsv',
         exons = working_dir / 'info' / 'exons.tsv.gz',
         var_per_bin = working_dir / 'info' / 'var_per_bin.txt',
-        bw = sample_table['path'].tolist(),
+        bw = get_bigwig_paths(sample_table),
     output:
         beds = working_dir / 'gene_bins' / 'batch_{batch}.bed.gz',
     resources:
@@ -58,7 +72,7 @@ rule laddr_binning:
 rule laddr_coverage:
     """Assemble coverage across samples, normalize, regress out explicit phenotypes, and bin into batches for PCA"""
     input:
-        bw = lambda w: sample_table.loc[sample_table['dataset'] == w.dataset, 'path'].tolist(),
+        bw = lambda w: get_bigwig_paths(sample_table.loc[sample_table['dataset'] == w.dataset, :]),
         bins = working_dir / 'gene_bins' / 'batch_{batch}.bed.gz',
         median_covg = working_dir / 'info' / 'median_coverage.txt',
         phenos = lambda w: get_dataset_pheno_paths(w.dataset),

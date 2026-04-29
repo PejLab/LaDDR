@@ -15,7 +15,11 @@ input:
     directory: ../data_input/covg_bigwig
     ## If method is "manifest", path to a headerless tab-delimited manifest file with three columns:
     ## dataset, sample, path to bigWig file.
+    ## If stranded is true, the manifest must instead have four columns:
+    ## dataset, sample, path to plus-strand bigWig file, path to minus-strand bigWig file.
     manifest: coverage_manifest.tsv
+    ## Set true to use strand-specific bigWigs for each sample.
+    stranded: false
 
   ## Minimum proportion of samples that must have non-zero coverage for a gene to include it in the models or phenotypes.
   min_samples_expressed: 0.5

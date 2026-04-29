@@ -4,7 +4,6 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
-import numpy as np
 import pandas as pd
 import yaml
 from .binning import adaptive_binning, fixed_binning, variance_threshold
@@ -18,6 +17,7 @@ class CoverageConfig:
     method: str
     directory: Path
     manifest: Path
+    stranded: bool
 
 @dataclass
 class InputConfig:
@@ -84,7 +84,8 @@ class Config:
         coverage = CoverageConfig(
             method=data_coverage.get('method', 'manifest'),
             directory=Path(data_coverage.get('directory', 'covg_bigwig')),
-            manifest=Path(data_coverage.get('manifest', 'coverage_manifest.tsv'))
+            manifest=Path(data_coverage.get('manifest', 'coverage_manifest.tsv')),
+            stranded=data_coverage.get('stranded', False)
         )
         data_adaptive = data_binning.get('adaptive', {})
         adaptive = AdaptiveBinningConfig(
@@ -168,6 +169,8 @@ def create_parser():
 
 def get_sample_table(coverage_config: CoverageConfig, project_dir: Path) -> pd.DataFrame:
     """Get a table of samples from a coverage config"""
+    if coverage_config.stranded and coverage_config.method != 'manifest':
+        raise ValueError('Stranded coverage is only supported with manifest input')
     if coverage_config.method == 'directory':
         # Get all subdirectories as datasets, excluding hidden ones
         covg_dir = project_dir / coverage_config.directory
@@ -188,7 +191,17 @@ def get_sample_table(coverage_config: CoverageConfig, project_dir: Path) -> pd.D
         return pd.DataFrame(rows)
     else:
         manifest_path = project_dir / coverage_config.manifest
-        df = pd.read_csv(manifest_path, sep='\t', names=['dataset', 'sample', 'path'])
+        df = pd.read_csv(manifest_path, sep='\t', header=None)
+        if coverage_config.stranded:
+            if df.shape[1] != 4:
+                raise ValueError(f'Stranded coverage manifest must have 4 columns, but found {df.shape[1]}')
+            df.columns = ['dataset', 'sample', 'plus_path', 'minus_path']
+            path_columns = ['plus_path', 'minus_path']
+        else:
+            if df.shape[1] != 3:
+                raise ValueError(f'Coverage manifest must have 3 columns, but found {df.shape[1]}')
+            df.columns = ['dataset', 'sample', 'path']
+            path_columns = ['path']
         duplicates = df['sample'].duplicated(keep=False)
         if duplicates.any():
             duplicate_samples = df[duplicates]
@@ -199,10 +212,12 @@ def get_sample_table(coverage_config: CoverageConfig, project_dir: Path) -> pd.D
         # Convert relative paths to absolute paths, preserving existing absolute paths
         if coverage_config.directory:
             # If directory is provided, paths in manifest are relative to that directory
-            df['path'] = df['path'].apply(lambda p: str((project_dir / coverage_config.directory / p).absolute()) if not Path(p).is_absolute() else p)
+            for col in path_columns:
+                df[col] = df[col].apply(lambda p: str((project_dir / coverage_config.directory / p).absolute()) if not Path(p).is_absolute() else p)
         else:
             # Otherwise paths are relative to project directory
-            df['path'] = df['path'].apply(lambda p: str((project_dir / p).absolute()) if not Path(p).is_absolute() else p)
+            for col in path_columns:
+                df[col] = df[col].apply(lambda p: str((project_dir / p).absolute()) if not Path(p).is_absolute() else p)
         return df
 
 def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):
@@ -221,13 +236,12 @@ def cli_setup(config: Config, project_dir: Path, sample_table: pd.DataFrame):
         # Use coverage from all datasets, subsample if necessary
         with open(project_dir / 'info' / 'median_coverage.txt', 'r') as f:
             median_coverage = float(f.read())
-        bigwig_paths = sample_table['path'].to_numpy()
-        if len(bigwig_paths) > config.binning.adaptive.max_samples:
-            bigwig_paths = np.random.choice(bigwig_paths, config.binning.adaptive.max_samples, replace=False)
-        bigwig_paths = [Path(p) for p in bigwig_paths]
+        bigwig_manifest = sample_table
+        if len(bigwig_manifest) > config.binning.adaptive.max_samples:
+            bigwig_manifest = bigwig_manifest.sample(n=config.binning.adaptive.max_samples)
         var_per_bin = variance_threshold(
             genes=genes,
-            bigwig_paths=bigwig_paths,
+            bigwig_paths=bigwig_manifest,
             bins_per_gene=config.binning.adaptive.bins_per_gene,
             median_coverage=median_coverage,
             covg_diff=config.binning.method == 'adaptive_diffvar'
@@ -243,10 +257,9 @@ def cli_binning(args: argparse.Namespace, config: Config, project_dir: Path, sam
     print('=== Partitioning genes into bins ===', flush=True)
     if config.binning.method in ['adaptive_covgcorr', 'adaptive_covgvar', 'adaptive_diffvar']:
         # Use coverage from all datasets, subsample if necessary
-        bigwig_paths = sample_table['path'].to_numpy()
-        if len(bigwig_paths) > config.binning.adaptive.max_samples:
-            bigwig_paths = np.random.choice(bigwig_paths, config.binning.adaptive.max_samples, replace=False)
-        bigwig_paths = [Path(p) for p in bigwig_paths]
+        bigwig_manifest = sample_table
+        if len(bigwig_manifest) > config.binning.adaptive.max_samples:
+            bigwig_manifest = bigwig_manifest.sample(n=config.binning.adaptive.max_samples)
         if config.binning.method in {'adaptive_covgvar', 'adaptive_diffvar'}:
             with open(project_dir / 'info' / 'var_per_bin.txt', 'r') as f:
                 var_threshold = float(f.read())
@@ -257,7 +270,7 @@ def cli_binning(args: argparse.Namespace, config: Config, project_dir: Path, sam
             exon_file=project_dir / 'info' / 'exons.tsv.gz',
             outdir=project_dir / 'gene_bins',
             binning_method=config.binning.method,
-            bigwig_paths=bigwig_paths,
+            bigwig_paths=bigwig_manifest,
             var_threshold=var_threshold,
             min_mean_total_covg=config.binning.adaptive.min_mean_total_covg,
             max_corr=config.binning.adaptive.max_corr,
